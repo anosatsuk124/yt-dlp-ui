@@ -13,8 +13,10 @@ import {
   updateJobStatus,
   updateJobProgress,
   markMegaPending,
+  reconcileOrphans,
 } from "./src/lib/db";
 import { DOWNLOADER_URL } from "./src/lib/env";
+import { getJobs as getDownloaderJobs } from "./src/lib/downloader";
 import { loadMegaConfig } from "./src/lib/mega";
 import { enqueueMegaUpload, startMegaUploader } from "./src/lib/mega-uploader";
 
@@ -147,6 +149,28 @@ app.prepare().then(() => {
       socket.destroy();
     }
   });
+
+  // Mark any pre-existing 'queued'/'running' rows from a previous run as
+  // 'failed' unless the downloader is still tracking them. Best-effort: a
+  // dead downloader at startup means we mark everything; the rows that
+  // genuinely survived would have been re-reported via /events anyway.
+  void (async () => {
+    const alive = new Set<string>();
+    try {
+      const jobs = await getDownloaderJobs();
+      for (const j of jobs) {
+        if (j.status === "queued" || j.status === "running") alive.add(j.id);
+      }
+    } catch (e) {
+      console.log("[reconcile] downloader unreachable, treating all active rows as orphan:", (e as Error).message);
+    }
+    try {
+      const n = reconcileOrphans(alive);
+      if (n > 0) console.log(`[reconcile] marked ${n} stale job(s) as failed`);
+    } catch (e) {
+      console.log("[reconcile] failed:", (e as Error).message);
+    }
+  })();
 
   const controller = new AbortController();
   void consumeEvents(controller.signal);

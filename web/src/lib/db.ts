@@ -115,6 +115,32 @@ export function updateJobProgress(id: string, progress: number, speed: string | 
   `).run(progress, speed, eta, id);
 }
 
+// Mark any rows still tagged 'running' or 'queued' as 'failed'. Called on
+// startup, after we've checked which ids the downloader is actually still
+// tracking — anything not in `aliveIds` is an orphan from a previous run.
+export function reconcileOrphans(aliveIds: Set<string>): number {
+  const stale = db().prepare(
+    "SELECT id FROM jobs WHERE status IN ('queued','running')",
+  ).all() as { id: string }[];
+  if (stale.length === 0) return 0;
+
+  const now = Date.now();
+  const stmt = db().prepare(`
+    UPDATE jobs
+       SET status = 'failed',
+           error  = COALESCE(error, 'interrupted: web restarted before downloader reported completion'),
+           finished_at = ?
+     WHERE id = ?
+  `);
+  let n = 0;
+  for (const { id } of stale) {
+    if (aliveIds.has(id)) continue;
+    stmt.run(now, id);
+    n += 1;
+  }
+  return n;
+}
+
 export function markMegaPending(id: string): void {
   db().prepare(
     "UPDATE jobs SET mega_status = 'pending', mega_error = NULL WHERE id = ?",
