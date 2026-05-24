@@ -80,12 +80,15 @@ export class MegaClient {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     folderNode: any,
     onProgress?: (uploaded: number, total: number) => void,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (!this.storage) throw new Error("mega client not connected");
+    if (signal?.aborted) throw new Error("aborted");
     const stat = await fs.promises.stat(localPath);
     const total = stat.size;
     const name = path.basename(localPath);
-    const uploadStream = folderNode.upload({ name, size: total });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const uploadStream: any = folderNode.upload({ name, size: total });
     const readStream = fs.createReadStream(localPath);
     if (onProgress) {
       let uploaded = 0;
@@ -94,8 +97,19 @@ export class MegaClient {
         onProgress(uploaded, total);
       });
     }
-    readStream.pipe(uploadStream);
-    await uploadStream.complete;
+    const onAbort = () => {
+      const err = new Error("aborted");
+      try { readStream.destroy(err); } catch { /* ignore */ }
+      try { uploadStream.destroy?.(err); } catch { /* ignore */ }
+    };
+    if (signal) signal.addEventListener("abort", onAbort);
+    try {
+      readStream.pipe(uploadStream);
+      await uploadStream.complete;
+    } finally {
+      if (signal) signal.removeEventListener("abort", onAbort);
+    }
+    if (signal?.aborted) throw new Error("aborted");
   }
 
   async disconnect(): Promise<void> {

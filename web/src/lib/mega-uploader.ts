@@ -13,6 +13,7 @@ import {
   getJob,
   getSetting,
   listJobsPendingMegaUpload,
+  markMegaCanceled,
   markMegaFailed,
   markMegaPending,
   markMegaUploaded,
@@ -20,6 +21,11 @@ import {
   updateMegaProgress,
 } from "./db";
 import { MegaClient, loadMegaConfig } from "./mega";
+
+// In-flight uploads keyed by jobId. Used by cancelMegaUpload to abort
+// an active stream. Items only live here between markMegaUploading and
+// the worker's finally block.
+const activeUploads = new Map<string, AbortController>();
 
 const PROGRESS_THROTTLE_MS = 1500;
 
@@ -128,34 +134,44 @@ async function processOne(jobId: string, client: MegaClient, folder: any, worker
     console.log(`[mega/w${workerId}] skipping ${jobId}: job or file_path missing`);
     return;
   }
+  // The user may have canceled it between enqueue and now.
+  if (job.mega_status === "canceled") {
+    console.log(`[mega/w${workerId}] ${jobId} was canceled before pickup`);
+    return;
+  }
   if (!fs.existsSync(job.file_path)) {
     markMegaFailed(jobId, "local file missing before upload");
     return;
   }
+
+  const controller = new AbortController();
+  activeUploads.set(jobId, controller);
   try {
     markMegaUploading(jobId);
     console.log(`[mega/w${workerId}] uploading ${jobId} -> ${job.file_path}`);
-    // Throttle the per-chunk progress events down to one DB write every
-    // ~1.5s. Speed is an EWMA over recent chunks so brief stalls don't
-    // collapse the displayed rate to zero.
     let lastWrite = 0;
     let lastBytes = 0;
     let lastTime = Date.now();
     let ewmaBps = 0;
-    await client.uploadFile(job.file_path, folder, (uploaded, total) => {
-      const now = Date.now();
-      const dt = now - lastTime;
-      if (dt >= 250) {
-        const instBps = ((uploaded - lastBytes) * 1000) / dt;
-        ewmaBps = ewmaBps === 0 ? instBps : 0.7 * ewmaBps + 0.3 * instBps;
-        lastBytes = uploaded;
-        lastTime = now;
-      }
-      if (now - lastWrite < PROGRESS_THROTTLE_MS) return;
-      lastWrite = now;
-      const pct = total > 0 ? (uploaded / total) * 100 : 0;
-      updateMegaProgress(jobId, pct, ewmaBps > 0 ? formatBytesPerSec(ewmaBps) : null);
-    });
+    await client.uploadFile(
+      job.file_path,
+      folder,
+      (uploaded, total) => {
+        const now = Date.now();
+        const dt = now - lastTime;
+        if (dt >= 250) {
+          const instBps = ((uploaded - lastBytes) * 1000) / dt;
+          ewmaBps = ewmaBps === 0 ? instBps : 0.7 * ewmaBps + 0.3 * instBps;
+          lastBytes = uploaded;
+          lastTime = now;
+        }
+        if (now - lastWrite < PROGRESS_THROTTLE_MS) return;
+        lastWrite = now;
+        const pct = total > 0 ? (uploaded / total) * 100 : 0;
+        updateMegaProgress(jobId, pct, ewmaBps > 0 ? formatBytesPerSec(ewmaBps) : null);
+      },
+      controller.signal,
+    );
     markMegaUploaded(jobId, Date.now());
     try {
       await fs.promises.unlink(job.file_path);
@@ -165,8 +181,15 @@ async function processOne(jobId: string, client: MegaClient, folder: any, worker
     }
   } catch (e) {
     const msg = (e as Error).message || String(e);
-    console.error(`[mega/w${workerId}] upload failed ${jobId}:`, msg);
-    markMegaFailed(jobId, msg);
+    if (controller.signal.aborted) {
+      console.log(`[mega/w${workerId}] canceled ${jobId}`);
+      markMegaCanceled(jobId, "canceled by user");
+    } else {
+      console.error(`[mega/w${workerId}] upload failed ${jobId}:`, msg);
+      markMegaFailed(jobId, msg);
+    }
+  } finally {
+    activeUploads.delete(jobId);
   }
 }
 
@@ -176,4 +199,27 @@ async function processOne(jobId: string, client: MegaClient, folder: any, worker
 // exit if they're over.
 export function notifyMaxParallelChanged(): void {
   spawnWorkers();
+}
+
+// Cancel an in-flight or queued MEGA upload. Returns the state we found
+// the job in: "uploading" if a live stream was aborted, "queued" if it
+// was sitting in the queue and we pulled it out before any worker
+// picked it up, "not-found" otherwise. The DB row is left at
+// mega_status='canceled' so the standard recovery / auto-pickup paths
+// don't immediately re-enqueue it — the user has to explicitly retry.
+export function cancelMegaUpload(jobId: string): "uploading" | "queued" | "not-found" {
+  const ctrl = activeUploads.get(jobId);
+  if (ctrl) {
+    ctrl.abort();
+    // The worker's catch block will markMegaCanceled and clear the map.
+    return "uploading";
+  }
+  const idx = queue.indexOf(jobId);
+  if (idx >= 0) {
+    queue.splice(idx, 1);
+    queued.delete(jobId);
+    markMegaCanceled(jobId, "canceled before upload started");
+    return "queued";
+  }
+  return "not-found";
 }

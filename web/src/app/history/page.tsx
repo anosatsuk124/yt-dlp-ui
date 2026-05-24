@@ -98,6 +98,29 @@ export default function Page() {
     [toast],
   );
 
+  const onCancelUpload = useCallback(
+    async (job: JobRow) => {
+      const res = await fetch(`/api/history/${encodeURIComponent(job.id)}/upload`, {
+        method: "DELETE",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 202) {
+        toast({ title: "Upload canceled" });
+        // Optimistic: flip to 'canceled' so the Retry button appears immediately.
+        setJobs(curr =>
+          curr.map(j => (j.id === job.id ? { ...j, mega_status: "canceled" } : j)),
+        );
+      } else {
+        toast({
+          title: "Cancel failed",
+          description: body?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+      }
+    },
+    [toast],
+  );
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">History</h1>
@@ -162,6 +185,7 @@ export default function Page() {
                         file={file}
                         onDelete={() => onDelete(job)}
                         onUpload={() => onUpload(job)}
+                        onCancelUpload={() => onCancelUpload(job)}
                       />
                     </TableCell>
                   </TableRow>
@@ -186,11 +210,13 @@ function ActionCell({
   file,
   onDelete,
   onUpload,
+  onCancelUpload,
 }: {
   job: JobRow;
   file: string | null;
   onDelete: () => void;
   onUpload: () => void;
+  onCancelUpload: () => void;
 }) {
   // Mega upload finished — the local file is intentionally gone. Show
   // status only; deletion isn't applicable here.
@@ -234,18 +260,44 @@ function ActionCell({
         </div>
         <Progress value={pct} className="h-1.5" />
       </div>,
+      <Button
+        key="mega-cancel"
+        variant="ghost"
+        size="sm"
+        className="h-auto px-1 py-0 text-destructive hover:text-destructive"
+        onClick={onCancelUpload}
+      >
+        Cancel MEGA
+      </Button>,
     );
   } else if (job.mega_status === "pending") {
     parts.push(
       <span key="mega" className="text-muted-foreground">MEGA queued</span>,
+      <Button
+        key="mega-cancel"
+        variant="ghost"
+        size="sm"
+        className="h-auto px-1 py-0 text-destructive hover:text-destructive"
+        onClick={onCancelUpload}
+      >
+        Cancel MEGA
+      </Button>,
     );
   } else if (
-    // Either never attempted (null) or previously failed — and we have a
-    // completed local file. Offer a manual upload button.
-    (job.mega_status == null || job.mega_status === "failed") &&
+    // Either never attempted (null), previously failed, or user canceled —
+    // and we have a completed local file. Offer a manual upload button.
+    (job.mega_status == null || job.mega_status === "failed" || job.mega_status === "canceled") &&
     job.status === "completed" &&
     file
   ) {
+    const label =
+      job.mega_status === "failed" ? "Retry MEGA"
+      : job.mega_status === "canceled" ? "Retry MEGA"
+      : "Upload";
+    const tooltip =
+      job.mega_status === "failed"   ? (job.mega_error ?? "previous upload failed — click to retry")
+      : job.mega_status === "canceled" ? (job.mega_error ?? "upload canceled — click to retry")
+      : "upload this file to MEGA";
     parts.push(
       <Button
         key="mega-upload"
@@ -253,13 +305,9 @@ function ActionCell({
         size="sm"
         className="h-auto px-1 py-0 text-primary hover:text-primary"
         onClick={onUpload}
-        title={
-          job.mega_status === "failed"
-            ? job.mega_error ?? "previous upload failed — click to retry"
-            : "upload this file to MEGA"
-        }
+        title={tooltip}
       >
-        {job.mega_status === "failed" ? "Retry MEGA" : "Upload"}
+        {label}
       </Button>,
     );
   }

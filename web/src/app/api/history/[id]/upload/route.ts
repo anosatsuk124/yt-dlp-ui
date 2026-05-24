@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { NextResponse } from "next/server";
 import { getJob, markMegaPending } from "@/lib/db";
-import { enqueueMegaUpload } from "@/lib/mega-uploader";
+import { cancelMegaUpload, enqueueMegaUpload } from "@/lib/mega-uploader";
 import { loadMegaConfig } from "@/lib/mega";
 
 export const runtime = "nodejs";
@@ -36,6 +36,7 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
       { status: 409 },
     );
   }
+  // 'failed' or 'canceled' both mean "ok to retry" — fall through.
 
   // MEGA can be disabled in settings — we still mark pending so it'll be
   // picked up the next time the uploader queue ticks (e.g. after enable +
@@ -48,4 +49,20 @@ export async function POST(_req: Request, { params }: { params: { id: string } }
     { ok: true, queued: true, mega_enabled: cfg.enabled },
     { status: 202 },
   );
+}
+
+// Cancel an in-flight or queued MEGA upload. Until the user retries via
+// POST, the row stays at mega_status='canceled' and is NOT auto-picked
+// up by startMegaUploader / completion events.
+export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+  const job = getJob(params.id);
+  if (!job) return NextResponse.json({ error: "not found" }, { status: 404 });
+  if (job.mega_status !== "pending" && job.mega_status !== "uploading") {
+    return NextResponse.json(
+      { error: `nothing to cancel (mega_status=${job.mega_status ?? "null"})` },
+      { status: 409 },
+    );
+  }
+  const state = cancelMegaUpload(params.id);
+  return NextResponse.json({ ok: true, state }, { status: 202 });
 }

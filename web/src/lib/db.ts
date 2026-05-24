@@ -5,7 +5,7 @@ import { DB_PATH } from "./env";
 
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
 
-export type MegaStatus = "pending" | "uploading" | "uploaded" | "failed";
+export type MegaStatus = "pending" | "uploading" | "uploaded" | "failed" | "canceled";
 
 export interface JobRow {
   id: string;
@@ -188,6 +188,12 @@ export function markMegaFailed(id: string, err: string): void {
   db().prepare(
     "UPDATE jobs SET mega_status = 'failed', mega_error = ? WHERE id = ?",
   ).run(err, id);
+}
+
+export function markMegaCanceled(id: string, reason: string): void {
+  db().prepare(
+    "UPDATE jobs SET mega_status = 'canceled', mega_error = ?, mega_speed = NULL WHERE id = ?",
+  ).run(reason, id);
 }
 
 export function listJobsPendingMegaUpload(): JobRow[] {
