@@ -7,6 +7,13 @@ services:
       COOKIES_DIR: /cookies
       DB_PATH: /data/app.db
       PORT: "3000"
+      # Node's happy-eyeballs autoFamily misbehaves when the netns has no
+      # IPv6 route (tailscale-sidecar mode): every AAAA address returns
+      # ENETUNREACH almost instantly and the IPv4 fallback gets tagged as
+      # ETIMEDOUT, so all outbound fetch() calls (e.g. megajs → MEGA API)
+      # fail at ~1.5s even though curl works. Force IPv4-first and disable
+      # the autoselection so node:https / undici behave like curl.
+      NODE_OPTIONS: "--no-network-family-autoselection --dns-result-order=ipv4first"
     volumes:
       - ${HOST_DOWNLOAD_DIR:-./downloads}:/downloads
       - ${HOST_COOKIES_DIR:-./cookies}:/cookies
