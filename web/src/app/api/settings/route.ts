@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSetting, setSetting } from "@/lib/db";
 import { patchConfig } from "@/lib/downloader";
 import { DEFAULT_MEGA_FOLDER } from "@/lib/mega";
+import { notifyMaxParallelChanged } from "@/lib/mega-uploader";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -20,6 +21,7 @@ interface MegaResponse {
   email: string;
   hasPassword: boolean;
   folder: string;
+  maxParallel: number;
 }
 
 export async function GET() {
@@ -29,6 +31,7 @@ export async function GET() {
     email: getSetting("mega_email") ?? "",
     hasPassword: megaPassword.length > 0,
     folder: getSetting("mega_folder") || DEFAULT_MEGA_FOLDER,
+    maxParallel: parseInt(getSetting("mega_max_parallel") ?? "2", 10) || 2,
   };
   return NextResponse.json({
     defaultFormat: getSetting("default_format") ?? "best",
@@ -45,6 +48,7 @@ interface PutBody {
     email?: string;
     password?: string;
     folder?: string;
+    maxParallel?: number;
   };
 }
 
@@ -78,6 +82,12 @@ export async function PUT(req: Request) {
     if (typeof m.folder === "string") {
       const cleaned = m.folder.trim() || DEFAULT_MEGA_FOLDER;
       setSetting("mega_folder", cleaned.startsWith("/") ? cleaned : `/${cleaned}`);
+    }
+    if (typeof m.maxParallel === "number" && m.maxParallel >= 1 && m.maxParallel <= 8) {
+      setSetting("mega_max_parallel", String(m.maxParallel));
+      // Wake the uploader so additional workers spawn immediately if the
+      // limit was raised.
+      notifyMaxParallelChanged();
     }
   }
   return NextResponse.json({ ok: true });

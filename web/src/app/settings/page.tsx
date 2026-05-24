@@ -16,6 +16,7 @@ interface MegaSettings {
   password: string; // never echoed from the server — bound only to the input
   folder: string;
   hasPassword: boolean;
+  maxParallel: number;
 }
 
 const DEFAULT_MEGA: MegaSettings = {
@@ -24,6 +25,7 @@ const DEFAULT_MEGA: MegaSettings = {
   password: "",
   folder: "/yt-dlp-ui",
   hasPassword: false,
+  maxParallel: 2,
 };
 
 export default function Page() {
@@ -40,7 +42,7 @@ export default function Page() {
       .then((s: {
         defaultFormat?: string;
         maxParallel?: number;
-        mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string };
+        mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string; maxParallel?: number };
       }) => {
         if (s.defaultFormat && isFormatKey(s.defaultFormat)) {
           setDefaultFormat(s.defaultFormat);
@@ -53,6 +55,7 @@ export default function Page() {
             password: "",
             folder: s.mega.folder ?? "/yt-dlp-ui",
             hasPassword: !!s.mega.hasPassword,
+            maxParallel: typeof s.mega.maxParallel === "number" ? s.mega.maxParallel : 2,
           });
         }
       })
@@ -74,6 +77,10 @@ export default function Page() {
       toast({ title: "MEGA password required", description: "Provide a password or disable MEGA upload." });
       return;
     }
+    if (!Number.isFinite(mega.maxParallel) || mega.maxParallel < 1 || mega.maxParallel > 8) {
+      toast({ title: "Invalid MEGA max parallel", description: "Must be 1–8." });
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await fetch("/api/settings", {
@@ -88,6 +95,7 @@ export default function Page() {
             // Empty string -> server keeps existing password.
             password: mega.password,
             folder: mega.folder,
+            maxParallel: mega.maxParallel,
           },
         }),
       });
@@ -204,6 +212,26 @@ export default function Page() {
                   <p className="text-xs text-muted-foreground">
                     Absolute path inside your MEGA Cloud Drive. Created on
                     first upload if missing.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="mega-max-parallel">Max parallel MEGA uploads</Label>
+                  <Input
+                    id="mega-max-parallel"
+                    type="number"
+                    min={1}
+                    max={8}
+                    value={mega.maxParallel}
+                    onChange={e =>
+                      setMega(m => ({ ...m, maxParallel: parseInt(e.target.value, 10) || 1 }))
+                    }
+                    className="w-32"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    1–8. Each worker opens its own MEGA session; raising this
+                    takes effect immediately, lowering it kicks in as workers
+                    finish their current upload.
                   </p>
                 </div>
               </div>
