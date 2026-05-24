@@ -63,6 +63,33 @@ export default function Page() {
     [toast],
   );
 
+  const onUpload = useCallback(
+    async (job: JobRow) => {
+      const res = await fetch(`/api/history/${encodeURIComponent(job.id)}/upload`, {
+        method: "POST",
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.status === 202) {
+        toast({
+          title: body?.mega_enabled
+            ? "Queued for MEGA upload"
+            : "Queued — but MEGA is currently disabled in Settings",
+        });
+        // Optimistic: show 'pending' immediately so the user sees their click registered.
+        setJobs(curr =>
+          curr.map(j => (j.id === job.id ? { ...j, mega_status: "pending" } : j)),
+        );
+      } else {
+        toast({
+          title: "Upload failed",
+          description: body?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+      }
+    },
+    [toast],
+  );
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-semibold">History</h1>
@@ -122,7 +149,12 @@ export default function Page() {
                       {timeAgo(job.finished_at ?? job.created_at)}
                     </TableCell>
                     <TableCell>
-                      <ActionCell job={job} file={file} onDelete={() => onDelete(job)} />
+                      <ActionCell
+                        job={job}
+                        file={file}
+                        onDelete={() => onDelete(job)}
+                        onUpload={() => onUpload(job)}
+                      />
                     </TableCell>
                   </TableRow>
                 );
@@ -145,10 +177,12 @@ function ActionCell({
   job,
   file,
   onDelete,
+  onUpload,
 }: {
   job: JobRow;
   file: string | null;
   onDelete: () => void;
+  onUpload: () => void;
 }) {
   // Mega upload finished — the local file is intentionally gone. Show
   // status only; deletion isn't applicable here.
@@ -181,7 +215,7 @@ function ActionCell({
     );
   }
 
-  // MEGA status badges — informational, no action attached.
+  // MEGA status / actions.
   if (job.mega_status === "uploading") {
     parts.push(
       <span key="mega" className="text-muted-foreground">MEGA…</span>,
@@ -190,15 +224,28 @@ function ActionCell({
     parts.push(
       <span key="mega" className="text-muted-foreground">MEGA queued</span>,
     );
-  } else if (job.mega_status === "failed") {
+  } else if (
+    // Either never attempted (null) or previously failed — and we have a
+    // completed local file. Offer a manual upload button.
+    (job.mega_status == null || job.mega_status === "failed") &&
+    job.status === "completed" &&
+    file
+  ) {
     parts.push(
-      <span
-        key="mega"
-        className="text-destructive"
-        title={job.mega_error ?? "MEGA upload failed"}
+      <Button
+        key="mega-upload"
+        variant="ghost"
+        size="sm"
+        className="h-auto px-1 py-0 text-primary hover:text-primary"
+        onClick={onUpload}
+        title={
+          job.mega_status === "failed"
+            ? job.mega_error ?? "previous upload failed — click to retry"
+            : "upload this file to MEGA"
+        }
       >
-        MEGA failed
-      </span>,
+        {job.mega_status === "failed" ? "Retry MEGA" : "Upload"}
+      </Button>,
     );
   }
 
