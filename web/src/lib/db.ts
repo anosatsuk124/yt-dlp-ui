@@ -115,6 +115,19 @@ export function updateJobProgress(id: string, progress: number, speed: string | 
   `).run(progress, speed, eta, id);
 }
 
+export function updateJobTitle(id: string, title: string): void {
+  // Don't overwrite an existing title — yt-dlp emits before_dl twice for
+  // combo formats and the value should be identical, but in any case the
+  // first one to arrive wins.
+  db().prepare(`
+    UPDATE jobs SET title = ? WHERE id = ? AND (title IS NULL OR title = '')
+  `).run(title, id);
+}
+
+export function deleteJob(id: string): void {
+  db().prepare("DELETE FROM jobs WHERE id = ?").run(id);
+}
+
 // Mark any rows still tagged 'running' or 'queued' as 'failed'. Called on
 // startup, after we've checked which ids the downloader is actually still
 // tracking — anything not in `aliveIds` is an orphan from a previous run.

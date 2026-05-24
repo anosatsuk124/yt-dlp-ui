@@ -509,6 +509,28 @@ func (p *Pool) fail(id, msg string) {
 
 // handleStdoutLine parses one line of yt-dlp stdout and emits events.
 func (p *Pool) handleStdoutLine(id, line string, errBuf *rollingBuf, filePath *atomic.Value) {
+	// Resolved video title, emitted once per format-download by our
+	// `--print before_dl:TITLE_PROBE:%(title)s` directive. We forward it
+	// to subscribers only the first time per job — combo formats fire
+	// the before_dl hook twice (video + audio).
+	if strings.HasPrefix(line, "TITLE_PROBE:") {
+		title := strings.TrimSpace(strings.TrimPrefix(line, "TITLE_PROBE:"))
+		if title == "" || title == "NA" {
+			return
+		}
+		emit := false
+		p.registry.update(id, func(s *JobState) {
+			if s.Title == "" {
+				s.Title = title
+				emit = true
+			}
+		})
+		if emit {
+			p.bus.publish(Event{Type: "title", ID: id, Title: title})
+		}
+		return
+	}
+
 	// PROGRESS <down>/<total> <speed_bps> <eta_sec> <frag_idx>/<frag_count> <status>
 	if strings.HasPrefix(line, "PROGRESS ") {
 		fields := strings.Fields(line)
@@ -656,6 +678,10 @@ func buildArgs(j Job, downloadDir string) []string {
 		// non-NA for HLS/DASH downloads (e.g. Twitch) where the byte
 		// totals are NA — we use it as the fallback progress source.
 		"PROGRESS %(progress.downloaded_bytes)s/%(progress.total_bytes)s %(progress.speed)s %(progress.eta)s %(progress.fragment_index)s/%(progress.fragment_count)s %(progress.status)s",
+		// Emit the resolved video title once, right after extraction but
+		// before any fragments are downloaded, so the UI can swap "raw URL"
+		// for a real title as soon as it's known.
+		"--print", "before_dl:TITLE_PROBE:%(title)s",
 	}
 
 	switch strings.ToLower(j.Format) {

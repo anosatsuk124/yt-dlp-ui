@@ -12,6 +12,7 @@ import {
   listActiveJobs,
   updateJobStatus,
   updateJobProgress,
+  updateJobTitle,
   markMegaPending,
   reconcileOrphans,
 } from "./src/lib/db";
@@ -79,8 +80,26 @@ function applyEvent(event: DownloaderEvent) {
     }
   } else if (event.type === "title" && event.title) {
     try {
-      updateJobStatus(event.id, ("running" as any), { title: event.title });
+      updateJobTitle(event.id, event.title);
     } catch { /* job may not exist yet locally */ }
+  }
+}
+
+async function reconcileNow(reason: string) {
+  const alive = new Set<string>();
+  try {
+    const jobs = await getDownloaderJobs();
+    for (const j of jobs) {
+      if (j.status === "queued" || j.status === "running") alive.add(j.id);
+    }
+  } catch (e) {
+    console.log(`[reconcile/${reason}] downloader unreachable, treating all active rows as orphan:`, (e as Error).message);
+  }
+  try {
+    const n = reconcileOrphans(alive);
+    if (n > 0) console.log(`[reconcile/${reason}] marked ${n} stale job(s) as failed`);
+  } catch (e) {
+    console.log(`[reconcile/${reason}] failed:`, (e as Error).message);
   }
 }
 
@@ -93,6 +112,10 @@ async function consumeEvents(signal: AbortSignal) {
         continue;
       }
       console.log("[sse] connected to downloader /events");
+      // Every successful (re)connect: reconcile orphans. If the downloader
+      // was just restarted, any DB rows still tagged 'queued'/'running' that
+      // it doesn't know about get marked 'failed'.
+      await reconcileNow("sse-connect");
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
@@ -150,29 +173,10 @@ app.prepare().then(() => {
     }
   });
 
-  // Mark any pre-existing 'queued'/'running' rows from a previous run as
-  // 'failed' unless the downloader is still tracking them. Best-effort: a
-  // dead downloader at startup means we mark everything; the rows that
-  // genuinely survived would have been re-reported via /events anyway.
-  void (async () => {
-    const alive = new Set<string>();
-    try {
-      const jobs = await getDownloaderJobs();
-      for (const j of jobs) {
-        if (j.status === "queued" || j.status === "running") alive.add(j.id);
-      }
-    } catch (e) {
-      console.log("[reconcile] downloader unreachable, treating all active rows as orphan:", (e as Error).message);
-    }
-    try {
-      const n = reconcileOrphans(alive);
-      if (n > 0) console.log(`[reconcile] marked ${n} stale job(s) as failed`);
-    } catch (e) {
-      console.log("[reconcile] failed:", (e as Error).message);
-    }
-  })();
-
   const controller = new AbortController();
+  // consumeEvents calls reconcileNow on every successful (re)connect, so a
+  // startup with a healthy downloader covers itself; no separate startup
+  // reconciliation needed here.
   void consumeEvents(controller.signal);
   startMegaUploader();
 
