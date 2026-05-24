@@ -97,17 +97,27 @@ export class MegaClient {
         onProgress(uploaded, total);
       });
     }
-    const onAbort = () => {
+    // megajs's `uploadStream.complete` does not reject when the underlying
+    // streams are destroyed — it just hangs. We race it against a promise
+    // that rejects synchronously on abort, so a cancel actually unblocks
+    // the await even if megajs's HTTP requests keep churning in the
+    // background until they fail naturally.
+    const abortPromise = new Promise<never>((_, reject) => {
+      if (!signal) return;
+      const onAbort = () => reject(new Error("aborted"));
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    const onAbortDestroy = () => {
       const err = new Error("aborted");
       try { readStream.destroy(err); } catch { /* ignore */ }
       try { uploadStream.destroy?.(err); } catch { /* ignore */ }
     };
-    if (signal) signal.addEventListener("abort", onAbort);
+    if (signal) signal.addEventListener("abort", onAbortDestroy, { once: true });
     try {
       readStream.pipe(uploadStream);
-      await uploadStream.complete;
+      await Promise.race([uploadStream.complete, abortPromise]);
     } finally {
-      if (signal) signal.removeEventListener("abort", onAbort);
+      if (signal) signal.removeEventListener("abort", onAbortDestroy);
     }
     if (signal?.aborted) throw new Error("aborted");
   }
