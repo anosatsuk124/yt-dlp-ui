@@ -537,6 +537,19 @@ func (p *Pool) handleStdoutLine(id, line string, errBuf *rollingBuf, filePath *a
 		return
 	}
 
+	// Resolved output path, also from --print before_dl. Without this the
+	// new yt-dlp + --progress-template combo never prints a
+	// `[download] Destination: …` line and the cleanup-on-cancel path has
+	// no filename to scrub. Store unconditionally — combo formats refire
+	// before_dl per stream, but all values point at the same [id] bracket.
+	if strings.HasPrefix(line, "DEST_PROBE:") {
+		fp := strings.TrimSpace(strings.TrimPrefix(line, "DEST_PROBE:"))
+		if fp != "" && fp != "NA" {
+			filePath.Store(fp)
+		}
+		return
+	}
+
 	// PROGRESS <down>/<total> <speed_bps> <eta_sec> <frag_idx>/<frag_count> <status>
 	if strings.HasPrefix(line, "PROGRESS ") {
 		fields := strings.Fields(line)
@@ -688,6 +701,11 @@ func buildArgs(j Job, downloadDir string) []string {
 		// before any fragments are downloaded, so the UI can swap "raw URL"
 		// for a real title as soon as it's known.
 		"--print", "before_dl:TITLE_PROBE:%(title)s",
+		// Same idea for the output path. The new yt-dlp + --progress-template
+		// combo suppresses the standard `[download] Destination: …` line,
+		// which is how we used to capture the filename for cleanup-on-
+		// cancel. Probe it explicitly here instead.
+		"--print", "before_dl:DEST_PROBE:%(filename)s",
 	}
 
 	switch strings.ToLower(j.Format) {
