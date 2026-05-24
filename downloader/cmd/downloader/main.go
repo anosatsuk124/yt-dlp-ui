@@ -465,15 +465,20 @@ func (p *Pool) run(parentCtx context.Context, j Job) {
 	parserWG.Wait()
 
 	now := time.Now()
+	// Captured destination from yt-dlp's `[download] Destination: …` /
+	// `[Merger] Merging formats into "…"` / `[ExtractAudio] Destination: …`
+	// — used by the web side to clean up half-written partials on terminal
+	// non-completed exits.
+	fp, _ := filePath.Load().(string)
 	switch {
 	case canceled:
 		p.registry.update(j.ID, func(s *JobState) {
 			s.Status = StatusCanceled
+			s.FilePath = fp
 			s.EndedAt = now
 		})
-		p.bus.publish(Event{Type: "status", ID: j.ID, Status: StatusCanceled})
+		p.bus.publish(Event{Type: "status", ID: j.ID, Status: StatusCanceled, FilePath: fp})
 	case cmd.ProcessState != nil && cmd.ProcessState.Success():
-		fp, _ := filePath.Load().(string)
 		p.registry.update(j.ID, func(s *JobState) {
 			s.Status = StatusCompleted
 			s.Progress = 100
@@ -489,9 +494,10 @@ func (p *Pool) run(parentCtx context.Context, j Job) {
 		p.registry.update(j.ID, func(s *JobState) {
 			s.Status = StatusFailed
 			s.Error = msg
+			s.FilePath = fp
 			s.EndedAt = now
 		})
-		p.bus.publish(Event{Type: "status", ID: j.ID, Status: StatusFailed, Error: msg})
+		p.bus.publish(Event{Type: "status", ID: j.ID, Status: StatusFailed, Error: msg, FilePath: fp})
 	}
 
 	p.registry.markFinished(j.ID)

@@ -18,6 +18,7 @@ import {
 } from "./src/lib/db";
 import { DOWNLOADER_URL } from "./src/lib/env";
 import { getJobs as getDownloaderJobs } from "./src/lib/downloader";
+import { cleanupByIdBracket } from "./src/lib/cleanup";
 import { loadMegaConfig } from "./src/lib/mega";
 import { enqueueMegaUpload, startMegaUploader } from "./src/lib/mega-uploader";
 
@@ -77,6 +78,15 @@ function applyEvent(event: DownloaderEvent) {
           enqueueMegaUpload(event.id);
         }
       } catch (e) { console.error("mega enqueue failed:", e); }
+    }
+    // Sweep leftover .part / .ytdl / fragment files for any job that did
+    // not finish cleanly. The destination path captured by the downloader
+    // gives us the [id] bracket to match against.
+    if ((event.status === "failed" || event.status === "canceled") && event.filePath) {
+      try {
+        const n = cleanupByIdBracket(event.filePath);
+        if (n > 0) console.log(`[cleanup] ${event.status} job ${event.id}: removed ${n} partial file(s)`);
+      } catch (e) { console.error("partial cleanup failed:", e); }
     }
   } else if (event.type === "title" && event.title) {
     try {

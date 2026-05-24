@@ -1,8 +1,6 @@
-import fs from "node:fs";
-import path from "node:path";
 import { NextResponse } from "next/server";
 import { getJob, deleteJob } from "@/lib/db";
-import { DOWNLOAD_DIR } from "@/lib/env";
+import { cleanupByIdBracket } from "@/lib/cleanup";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -30,25 +28,10 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
     );
   }
 
-  // Best-effort unlink. If the file is gone for any reason, that's fine —
-  // we still want the row removed.
-  if (job.file_path) {
-    const name = path.basename(job.file_path);
-    if (name && !name.includes("..")) {
-      const full = path.join(DOWNLOAD_DIR, name);
-      try {
-        fs.unlinkSync(full);
-      } catch (e) {
-        const code = (e as NodeJS.ErrnoException).code;
-        if (code !== "ENOENT") {
-          return NextResponse.json(
-            { error: `unlink failed: ${(e as Error).message}` },
-            { status: 500 },
-          );
-        }
-      }
-    }
-  }
+  // Sweep the final file plus any leftover .part / .ytdl / *.part-Frag*
+  // by matching the [id] bracket in the captured destination path.
+  // Best-effort: missing files are fine, we still want the row gone.
+  cleanupByIdBracket(job.file_path);
 
   deleteJob(params.id);
   return new NextResponse(null, { status: 204 });
