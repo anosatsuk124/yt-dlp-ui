@@ -740,6 +740,14 @@ func formatETASeconds(s string) string {
 // app, which won't play VP9/Opus/HEVC reliably). The chain falls back
 // to less-restrictive selectors if the source genuinely doesn't have
 // an AVC/AAC track.
+//
+// Filter design: prefer codec filters (vcodec/acodec) over container
+// (ext) filters. AAC audio in particular can ship in either an `m4a` or
+// `mp4` container depending on the source (YouTube uses m4a, nicolive
+// uses mp4). Matching on `acodec^=mp4a` covers both; an `ext=m4a`
+// filter would drop the nicolive case. Sources with no combined format
+// (live streams) are caught by the final `bv*+ba` fallback — every
+// `b[…]` step would otherwise miss them.
 func formatSelector(format, compat string) string {
 	ios := compat == "ios"
 	switch format {
@@ -747,22 +755,25 @@ func formatSelector(format, compat string) string {
 		return "ba/b"
 	case "1080p":
 		if ios {
-			return "bv*[height<=1080][ext=mp4][vcodec^=avc1]+ba[ext=m4a][acodec^=mp4a]/" +
+			return "bv*[height<=1080][vcodec^=avc1]+ba[acodec^=mp4a]/" +
 				"b[height<=1080][ext=mp4][vcodec^=avc1][acodec^=mp4a]/" +
-				"b[height<=1080][ext=mp4]/b[height<=1080]"
+				"bv*[height<=1080]+ba/b[height<=1080]/" +
+				"bv*+ba/b"
 		}
-		return "bv*[height<=1080]+ba/b[height<=1080]"
+		return "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b"
 	case "720p":
 		if ios {
-			return "bv*[height<=720][ext=mp4][vcodec^=avc1]+ba[ext=m4a][acodec^=mp4a]/" +
+			return "bv*[height<=720][vcodec^=avc1]+ba[acodec^=mp4a]/" +
 				"b[height<=720][ext=mp4][vcodec^=avc1][acodec^=mp4a]/" +
-				"b[height<=720][ext=mp4]/b[height<=720]"
+				"bv*[height<=720]+ba/b[height<=720]/" +
+				"bv*+ba/b"
 		}
-		return "bv*[height<=720]+ba/b[height<=720]"
+		return "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b"
 	case "best", "":
 		if ios {
-			return "bv*[ext=mp4][vcodec^=avc1]+ba[ext=m4a][acodec^=mp4a]/" +
-				"b[ext=mp4][vcodec^=avc1][acodec^=mp4a]/b[ext=mp4]/b"
+			return "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/" +
+				"b[ext=mp4][vcodec^=avc1][acodec^=mp4a]/" +
+				"bv*+ba/b"
 		}
 		return "bv*+ba/b"
 	default:
