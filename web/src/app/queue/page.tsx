@@ -168,6 +168,13 @@ export default function Page() {
                   </Button>
                 ))}
               </div>
+              <p className="text-xs text-muted-foreground">
+                Live streams (e.g. <code>live.nicovideo.jp</code>) often
+                expose non-numeric format names (<code>high</code>/
+                <code>normal</code>/…). If <em>1080p</em> / <em>720p</em>{" "}
+                returns <code>Requested format is not available</code>,
+                retry with <strong>best</strong>.
+              </p>
             </div>
 
             <div className="space-y-2">
