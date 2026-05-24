@@ -70,13 +70,31 @@ export class MegaClient {
 
   // Upload a local file into the given folder node. Resolves to the final
   // remote MutableFile (we don't read anything off it today).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async uploadFile(localPath: string, folderNode: any): Promise<void> {
+  //
+  // `onProgress`, if given, is invoked with the running (uploadedBytes, totalBytes)
+  // pair every time a chunk flows through the read stream. The caller is
+  // expected to throttle DB writes / broadcasts from this — it can fire
+  // dozens of times per second.
+  async uploadFile(
+    localPath: string,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    folderNode: any,
+    onProgress?: (uploaded: number, total: number) => void,
+  ): Promise<void> {
     if (!this.storage) throw new Error("mega client not connected");
     const stat = await fs.promises.stat(localPath);
+    const total = stat.size;
     const name = path.basename(localPath);
-    const uploadStream = folderNode.upload({ name, size: stat.size });
-    fs.createReadStream(localPath).pipe(uploadStream);
+    const uploadStream = folderNode.upload({ name, size: total });
+    const readStream = fs.createReadStream(localPath);
+    if (onProgress) {
+      let uploaded = 0;
+      readStream.on("data", (chunk: Buffer | string) => {
+        uploaded += typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.length;
+        onProgress(uploaded, total);
+      });
+    }
+    readStream.pipe(uploadStream);
     await uploadStream.complete;
   }
 

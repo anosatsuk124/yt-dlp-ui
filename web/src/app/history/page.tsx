@@ -10,12 +10,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/components/ui/use-toast";
 import type { JobRow } from "@/lib/db";
 import { basename, statusBadgeClass, timeAgo } from "@/lib/format";
 
 const PAGE_SIZE = 50;
-const REFRESH_MS = 30_000;
+const IDLE_REFRESH_MS = 30_000;
+const ACTIVE_REFRESH_MS = 2_000;
 
 export default function Page() {
   const [jobs, setJobs] = useState<JobRow[]>([]);
@@ -34,11 +36,17 @@ export default function Page() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Poll faster when any MEGA upload is in flight so the progress bar
+  // moves visibly.
+  const hasActiveUpload = jobs.some(
+    j => j.mega_status === "uploading" || j.mega_status === "pending",
+  );
+
   useEffect(() => {
     load();
-    const t = setInterval(load, REFRESH_MS);
+    const t = setInterval(load, hasActiveUpload ? ACTIVE_REFRESH_MS : IDLE_REFRESH_MS);
     return () => clearInterval(t);
-  }, [load]);
+  }, [load, hasActiveUpload]);
 
   const onDelete = useCallback(
     async (job: JobRow) => {
@@ -217,8 +225,15 @@ function ActionCell({
 
   // MEGA status / actions.
   if (job.mega_status === "uploading") {
+    const pct = Math.max(0, Math.min(100, job.mega_progress ?? 0));
     parts.push(
-      <span key="mega" className="text-muted-foreground">MEGA…</span>,
+      <div key="mega" className="w-full min-w-[110px] space-y-0.5">
+        <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+          <span>MEGA {pct.toFixed(1)}%</span>
+          {job.mega_speed && <span>{job.mega_speed}</span>}
+        </div>
+        <Progress value={pct} className="h-1.5" />
+      </div>,
     );
   } else if (job.mega_status === "pending") {
     parts.push(

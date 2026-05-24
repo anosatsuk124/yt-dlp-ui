@@ -26,6 +26,8 @@ export interface JobRow {
   mega_status: MegaStatus | null;
   mega_uploaded_at: number | null;
   mega_error: string | null;
+  mega_progress: number;
+  mega_speed: string | null;
 }
 
 let _db: Database.Database | null = null;
@@ -60,11 +62,13 @@ function migrate(conn: Database.Database): void {
   if (!cols.has("mega_status"))      conn.exec("ALTER TABLE jobs ADD COLUMN mega_status TEXT");
   if (!cols.has("mega_uploaded_at")) conn.exec("ALTER TABLE jobs ADD COLUMN mega_uploaded_at INTEGER");
   if (!cols.has("mega_error"))       conn.exec("ALTER TABLE jobs ADD COLUMN mega_error TEXT");
+  if (!cols.has("mega_progress"))    conn.exec("ALTER TABLE jobs ADD COLUMN mega_progress REAL NOT NULL DEFAULT 0");
+  if (!cols.has("mega_speed"))       conn.exec("ALTER TABLE jobs ADD COLUMN mega_speed TEXT");
 }
 
 // --- helpers ---------------------------------------------------------------
 
-export function insertJob(row: Omit<JobRow, "progress" | "speed" | "eta" | "title" | "file_path" | "error" | "started_at" | "finished_at" | "mega_status" | "mega_uploaded_at" | "mega_error">): void {
+export function insertJob(row: Omit<JobRow, "progress" | "speed" | "eta" | "title" | "file_path" | "error" | "started_at" | "finished_at" | "mega_status" | "mega_uploaded_at" | "mega_error" | "mega_progress" | "mega_speed">): void {
   db().prepare(`
     INSERT INTO jobs (id, url, format, extra_args, cookies_file, status, created_at)
     VALUES (@id, @url, @format, @extra_args, @cookies_file, @status, @created_at)
@@ -164,13 +168,17 @@ export function markMegaPending(id: string): void {
 
 export function markMegaUploading(id: string): void {
   db().prepare(
-    "UPDATE jobs SET mega_status = 'uploading', mega_error = NULL WHERE id = ?",
+    "UPDATE jobs SET mega_status = 'uploading', mega_error = NULL, mega_progress = 0, mega_speed = NULL WHERE id = ?",
   ).run(id);
+}
+
+export function updateMegaProgress(id: string, progress: number, speed: string | null): void {
+  db().prepare("UPDATE jobs SET mega_progress = ?, mega_speed = ? WHERE id = ?").run(progress, speed, id);
 }
 
 export function markMegaUploaded(id: string, uploadedAt: number): void {
   db().prepare(
-    "UPDATE jobs SET mega_status = 'uploaded', mega_uploaded_at = ?, mega_error = NULL WHERE id = ?",
+    "UPDATE jobs SET mega_status = 'uploaded', mega_uploaded_at = ?, mega_error = NULL, mega_progress = 100, mega_speed = NULL WHERE id = ?",
   ).run(uploadedAt, id);
 }
 
