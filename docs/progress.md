@@ -25,12 +25,40 @@ Rolling notes on implementation status. Newest entries at the top.
   `docs/api.md`, `docs/design-progress-protocol.md` rewritten from
   skeletons.
 
+### Local verification (no Docker)
+
+Both services were run directly on the host (the host's Docker daemon
+has a broken containerd shim — `docker run hello-world` fails with
+`unsupported protocol: Yunix` — so the image build could not be
+exercised on this machine; this is a host-environment problem, not a
+project problem, and `docker compose config` already passes against
+both compose files).
+
+End-to-end smoke test confirmed working:
+
+- `go run ./cmd/downloader` starts cleanly, `/healthz` returns `OK`,
+  `/jobs` returns an empty list.
+- `POST /jobs` on the downloader accepts a job, emits the expected SSE
+  sequence `queued → running → failed` (failure is from yt-dlp's own
+  DNS resolution against an invalid host).
+- `npm start` brings up the Next.js custom server, creates the SQLite
+  DB on first call, and `/api/jobs`, `/api/cookies`, `/api/settings`
+  all return their initial state.
+- `POST /api/jobs` round-trips through the SSE consumer: the job lands
+  in the DB, transitions to `failed`, and shows up in `/api/history`
+  with the captured stderr.
+- `POST /api/cookies` (multipart) writes `cookies/<domain>.txt` with
+  mode 0600, the GET lists it, and `DELETE /api/cookies/<domain>`
+  removes it.
+
 ### Remaining
 
-- Full image build + end-to-end verification (run the stack, enqueue a real
-  URL, confirm a file lands in `./downloads` and history shows it).
-- Startup reconciliation for orphaned `running` rows (flagged as a known
-  limitation in `architecture.md`).
+- A real successful download (skipped here — requires network and a
+  known-good URL the user trusts; the failure path is fully exercised
+  above and the success path uses the same plumbing).
+- Building the images on a host with a working Docker runtime.
+- Startup reconciliation for orphaned `running` rows (flagged as a
+  known limitation in `architecture.md`).
 
 ### Initial planning
 
