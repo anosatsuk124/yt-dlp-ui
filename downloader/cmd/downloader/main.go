@@ -78,6 +78,23 @@ type JobState struct {
 	EndedAt   time.Time `json:"endedAt,omitempty"`
 }
 
+// MarshalJSON wipes the password-bearing fields before encoding so the
+// snapshot endpoint (GET /jobs) and any future serialization never leaks
+// plaintext credentials. The sensitive fields all carry `omitempty` so
+// clearing them simply drops the keys from the output. The non-secret auth
+// fields (username, ap_mso, ap_username, cookies/cert file paths) are
+// retained — they're useful for diagnosing which credential set a job ran
+// with.
+func (s JobState) MarshalJSON() ([]byte, error) {
+	type alias JobState // strip MarshalJSON to avoid infinite recursion
+	s.Password = ""
+	s.TwoFactor = ""
+	s.VideoPassword = ""
+	s.APPassword = ""
+	s.ClientCertPassword = ""
+	return json.Marshal(alias(s))
+}
+
 // Event is the SSE payload shape. Fields are optional; only those populated
 // for the event type are serialized.
 type Event struct {
@@ -404,6 +421,22 @@ func (p *Pool) run(parentCtx context.Context, j Job) {
 		s.StartedAt = time.Now()
 	})
 	p.bus.publish(Event{Type: "status", ID: j.ID, Status: StatusRunning})
+
+	// yt-dlp unconditionally writes the (possibly-updated) cookie jar back
+	// to the file passed via --cookies on shutdown. The canonical /cookies
+	// mount is read-only by design (the web service owns it), so a direct
+	// pass-through produces an OSError stack trace in stderr on every job
+	// that uses cookies. Copy the file to a per-job temp under /tmp,
+	// hand yt-dlp the temp path, and discard it on exit.
+	if j.CookiesFile != "" {
+		tmp, err := materializeCookies(j.CookiesFile, j.ID)
+		if err != nil {
+			p.fail(j.ID, "cookies: "+err.Error())
+			return
+		}
+		defer os.Remove(tmp)
+		j.CookiesFile = tmp
+	}
 
 	args := buildArgs(j, p.cfg.DownloadDir)
 	slog.Info("running yt-dlp", "id", j.ID, "args", redactArgs(args))
@@ -835,6 +868,32 @@ func buildArgs(j Job, downloadDir string) []string {
 
 	args = append(args, j.URL)
 	return args
+}
+
+// materializeCookies copies a cookie jar into a per-job temp file so yt-dlp
+// can write back to it without touching the read-only canonical mount.
+// The temp filename embeds the job ID for traceability if cleanup ever
+// races (it shouldn't — the caller defers os.Remove).
+func materializeCookies(src, jobID string) (string, error) {
+	in, err := os.ReadFile(src)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", src, err)
+	}
+	pattern := fmt.Sprintf("ytdlp-cookies-%s-*.txt", jobID)
+	f, err := os.CreateTemp("", pattern)
+	if err != nil {
+		return "", fmt.Errorf("create temp: %w", err)
+	}
+	if _, err := f.Write(in); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", fmt.Errorf("write temp: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return "", fmt.Errorf("close temp: %w", err)
+	}
+	return f.Name(), nil
 }
 
 // Flags whose value is sensitive (password, token, key passphrase). When
