@@ -126,6 +126,9 @@ export function useJobsWs(): { connected: boolean; jobs: JobRow[] } {
                 created_at: Date.now(),
                 started_at: null,
                 finished_at: null,
+                mega_status: null,
+                mega_uploaded_at: null,
+                mega_error: null,
               });
             }
             flush();

@@ -13,7 +13,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   error        TEXT,
   created_at   INTEGER NOT NULL,
   started_at   INTEGER,
-  finished_at  INTEGER
+  finished_at  INTEGER,
+  mega_status      TEXT,
+  mega_uploaded_at INTEGER,
+  mega_error       TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status  ON jobs(status);

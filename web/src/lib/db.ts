@@ -5,6 +5,8 @@ import { DB_PATH } from "./env";
 
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "canceled";
 
+export type MegaStatus = "pending" | "uploading" | "uploaded" | "failed";
+
 export interface JobRow {
   id: string;
   url: string;
@@ -21,6 +23,9 @@ export interface JobRow {
   created_at: number;
   started_at: number | null;
   finished_at: number | null;
+  mega_status: MegaStatus | null;
+  mega_uploaded_at: number | null;
+  mega_error: string | null;
 }
 
 let _db: Database.Database | null = null;
@@ -41,13 +46,25 @@ export function db(): Database.Database {
   const schema = fs.readFileSync(schemaPath, "utf-8");
   conn.exec(schema);
 
+  migrate(conn);
+
   _db = conn;
   return conn;
 }
 
+function migrate(conn: Database.Database): void {
+  const cols = new Set(
+    (conn.prepare("PRAGMA table_info(jobs)").all() as Array<{ name: string }>)
+      .map(c => c.name),
+  );
+  if (!cols.has("mega_status"))      conn.exec("ALTER TABLE jobs ADD COLUMN mega_status TEXT");
+  if (!cols.has("mega_uploaded_at")) conn.exec("ALTER TABLE jobs ADD COLUMN mega_uploaded_at INTEGER");
+  if (!cols.has("mega_error"))       conn.exec("ALTER TABLE jobs ADD COLUMN mega_error TEXT");
+}
+
 // --- helpers ---------------------------------------------------------------
 
-export function insertJob(row: Omit<JobRow, "progress" | "speed" | "eta" | "title" | "file_path" | "error" | "started_at" | "finished_at">): void {
+export function insertJob(row: Omit<JobRow, "progress" | "speed" | "eta" | "title" | "file_path" | "error" | "started_at" | "finished_at" | "mega_status" | "mega_uploaded_at" | "mega_error">): void {
   db().prepare(`
     INSERT INTO jobs (id, url, format, extra_args, cookies_file, status, created_at)
     VALUES (@id, @url, @format, @extra_args, @cookies_file, @status, @created_at)
@@ -96,6 +113,39 @@ export function updateJobProgress(id: string, progress: number, speed: string | 
   db().prepare(`
     UPDATE jobs SET progress = ?, speed = ?, eta = ? WHERE id = ?
   `).run(progress, speed, eta, id);
+}
+
+export function markMegaPending(id: string): void {
+  db().prepare(
+    "UPDATE jobs SET mega_status = 'pending', mega_error = NULL WHERE id = ?",
+  ).run(id);
+}
+
+export function markMegaUploading(id: string): void {
+  db().prepare(
+    "UPDATE jobs SET mega_status = 'uploading', mega_error = NULL WHERE id = ?",
+  ).run(id);
+}
+
+export function markMegaUploaded(id: string, uploadedAt: number): void {
+  db().prepare(
+    "UPDATE jobs SET mega_status = 'uploaded', mega_uploaded_at = ?, mega_error = NULL WHERE id = ?",
+  ).run(uploadedAt, id);
+}
+
+export function markMegaFailed(id: string, err: string): void {
+  db().prepare(
+    "UPDATE jobs SET mega_status = 'failed', mega_error = ? WHERE id = ?",
+  ).run(err, id);
+}
+
+export function listJobsPendingMegaUpload(): JobRow[] {
+  return db().prepare(`
+    SELECT * FROM jobs
+    WHERE mega_status IN ('pending','uploading')
+      AND file_path IS NOT NULL
+    ORDER BY finished_at ASC
+  `).all() as JobRow[];
 }
 
 export function getSetting(key: string): string | undefined {
