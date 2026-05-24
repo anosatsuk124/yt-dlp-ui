@@ -15,6 +15,7 @@ pnpm-debug.log*
 # Runtime data (bind-mount targets)
 /downloads/
 /cookies/
+/certs/
 /data/
 /tailscale-state/
 

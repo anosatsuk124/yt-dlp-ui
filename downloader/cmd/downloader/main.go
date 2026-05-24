@@ -49,6 +49,19 @@ type Job struct {
 	Compat      string   `json:"compat,omitempty"`
 	ExtraArgs   []string `json:"extraArgs,omitempty"`
 	CookiesFile string   `json:"cookiesFile,omitempty"`
+
+	// yt-dlp authentication. Every field is optional; non-empty values are
+	// appended as their corresponding flag in buildArgs.
+	Username           string `json:"username,omitempty"`
+	Password           string `json:"password,omitempty"`
+	TwoFactor          string `json:"twoFactor,omitempty"`
+	VideoPassword      string `json:"videoPassword,omitempty"`
+	APMSO              string `json:"apMso,omitempty"`
+	APUsername         string `json:"apUsername,omitempty"`
+	APPassword         string `json:"apPassword,omitempty"`
+	ClientCertFile     string `json:"clientCertFile,omitempty"`
+	ClientCertKeyFile  string `json:"clientCertKeyFile,omitempty"`
+	ClientCertPassword string `json:"clientCertPassword,omitempty"`
 }
 
 // JobState is the in-memory record kept for each job we have seen.
@@ -393,7 +406,7 @@ func (p *Pool) run(parentCtx context.Context, j Job) {
 	p.bus.publish(Event{Type: "status", ID: j.ID, Status: StatusRunning})
 
 	args := buildArgs(j, p.cfg.DownloadDir)
-	slog.Info("running yt-dlp", "id", j.ID, "args", args)
+	slog.Info("running yt-dlp", "id", j.ID, "args", redactArgs(args))
 
 	cmd := exec.Command(p.cfg.YTDLPPath, args...)
 	cmd.SysProcAttr = sysProcAttr() // own process group for clean signaling
@@ -781,6 +794,39 @@ func buildArgs(j Job, downloadDir string) []string {
 		args = append(args, "--cookies", j.CookiesFile)
 	}
 
+	// Auth flags. Appended before ExtraArgs so a user-supplied --username in
+	// the advanced args field still wins (yt-dlp takes the last occurrence).
+	if j.Username != "" {
+		args = append(args, "--username", j.Username)
+	}
+	if j.Password != "" {
+		args = append(args, "--password", j.Password)
+	}
+	if j.TwoFactor != "" {
+		args = append(args, "--twofactor", j.TwoFactor)
+	}
+	if j.VideoPassword != "" {
+		args = append(args, "--video-password", j.VideoPassword)
+	}
+	if j.APMSO != "" {
+		args = append(args, "--ap-mso", j.APMSO)
+	}
+	if j.APUsername != "" {
+		args = append(args, "--ap-username", j.APUsername)
+	}
+	if j.APPassword != "" {
+		args = append(args, "--ap-password", j.APPassword)
+	}
+	if j.ClientCertFile != "" {
+		args = append(args, "--client-certificate", j.ClientCertFile)
+	}
+	if j.ClientCertKeyFile != "" {
+		args = append(args, "--client-certificate-key", j.ClientCertKeyFile)
+	}
+	if j.ClientCertPassword != "" {
+		args = append(args, "--client-certificate-password", j.ClientCertPassword)
+	}
+
 	args = append(args, "-o", downloadDir+"/%(title).200B [%(id)s].%(ext)s")
 
 	if len(j.ExtraArgs) > 0 {
@@ -789,6 +835,33 @@ func buildArgs(j Job, downloadDir string) []string {
 
 	args = append(args, j.URL)
 	return args
+}
+
+// Flags whose value is sensitive (password, token, key passphrase). When
+// argv is logged we replace the next slice element after one of these
+// with "***" so credentials never land in service logs.
+var sensitiveArgFlags = map[string]struct{}{
+	"-p":                              {},
+	"--password":                      {},
+	"-2":                              {},
+	"--twofactor":                     {},
+	"--video-password":                {},
+	"--ap-password":                   {},
+	"--client-certificate-password":   {},
+}
+
+// redactArgs returns a copy of args with the value following any sensitive
+// flag replaced by "***". The input slice is not modified. Use this for any
+// argv that may be logged or otherwise persisted outside the process.
+func redactArgs(args []string) []string {
+	out := make([]string, len(args))
+	copy(out, args)
+	for i := 0; i < len(out)-1; i++ {
+		if _, hit := sensitiveArgFlags[out[i]]; hit {
+			out[i+1] = "***"
+		}
+	}
+	return out
 }
 
 // ----------------------------------------------------------------------------

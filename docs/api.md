@@ -28,7 +28,19 @@ Request:
 {
   "urls": ["https://www.youtube.com/watch?v=…"],
   "format": "best",
-  "extraArgs": "--write-subs --sub-lang \"en,en-US\""
+  "extraArgs": "--write-subs --sub-lang \"en,en-US\"",
+  "auth": {
+    "username": "me",
+    "password": "secret",
+    "twoFactor": "123456",
+    "videoPassword": "…",
+    "apMso": "DTV",
+    "apUsername": "…",
+    "apPassword": "…",
+    "clientCertFile": "client.cert.pem",
+    "clientCertKeyFile": "client.key.pem",
+    "clientCertPassword": "…"
+  }
 }
 ```
 
@@ -36,6 +48,17 @@ Request:
 - `format` (required): one of `"best" | "1080p" | "720p" | "audio"`.
 - `extraArgs` (optional): free-form string, shell-split server-side and
   appended to the `yt-dlp` argv. Unterminated quotes are a 400.
+- `auth` (optional): per-job credentials forwarded as the corresponding
+  yt-dlp flags (`--username`, `--password`, `--twofactor`,
+  `--video-password`, `--ap-mso`, `--ap-username`, `--ap-password`,
+  `--client-certificate`, `--client-certificate-key`,
+  `--client-certificate-password`). Every field is optional. Per-job
+  values override the per-domain binding stored at `/api/auth/:domain`
+  field-by-field; empty/missing fields fall through to the binding.
+  `clientCertFile` / `clientCertKeyFile` accept a basename of a file
+  uploaded to `/api/certs` (e.g. `client.cert.pem`); the server resolves
+  it to an absolute container path before forwarding. A reference to a
+  missing cert is a 400.
 
 Response (`201 Created`):
 
@@ -177,6 +200,109 @@ DELETE /api/cookies/example.com
 → 204 No Content
 ```
 
+### `GET /api/auth` — list per-domain credential bindings
+
+Source: `web/src/app/api/auth/route.ts`. Returns one row per saved
+binding, **redacted**: secret fields are reported as `has*` booleans only;
+plaintext values are never echoed.
+
+```json
+{
+  "bindings": [
+    {
+      "domain": "example.com",
+      "username": "me",
+      "apMso": "DTV",
+      "apUsername": "tv-user",
+      "clientCertFile": "/certs/example.cert.pem",
+      "clientCertKeyFile": "/certs/example.key.pem",
+      "hasPassword": true,
+      "hasVideoPassword": false,
+      "hasApPassword": true,
+      "hasClientCertPassword": true,
+      "createdAt": 1716540000000,
+      "updatedAt": 1716541000000
+    }
+  ]
+}
+```
+
+### `GET /api/auth/:domain` — read one binding (redacted)
+
+Same shape as a row above, wrapped in `{ "binding": … }`. `404 not found`
+if no binding exists. `400 invalid domain` on bad input.
+
+### `PUT /api/auth/:domain` — upsert a binding
+
+```json
+{
+  "username": "me",
+  "password": "secret",
+  "videoPassword": "…",
+  "apMso": "DTV",
+  "apUsername": "…",
+  "apPassword": "…",
+  "clientCertFile": "example.cert.pem",
+  "clientCertKeyFile": "example.key.pem",
+  "clientCertPassword": "…"
+}
+```
+
+All fields are optional. A missing or empty field keeps the previously
+stored value (so the UI can re-save other fields without re-typing the
+password). An explicit `null` clears the field. `clientCertFile` /
+`clientCertKeyFile` accept basenames; the server resolves them to
+absolute container paths and returns 400 if the file is not present
+under `CERTS_DIR`. Response is the redacted binding (same shape as
+`GET`).
+
+### `DELETE /api/auth/:domain` — remove a binding
+
+`204 No Content` on success, `404 not found` if no binding exists.
+
+### `GET /api/certs` — list uploaded PEM files
+
+Source: `web/src/app/api/certs/route.ts`. Lists `*.pem`, `*.crt`, `*.cer`,
+`*.key` files under `CERTS_DIR`.
+
+```json
+{
+  "certs": [
+    {
+      "name": "example.cert.pem",
+      "size": 2048,
+      "mtime": 1716530000000,
+      "path": "/certs/example.cert.pem"
+    }
+  ]
+}
+```
+
+### `POST /api/certs` — upload a PEM file
+
+`multipart/form-data` with fields:
+
+- `name`: filename. Must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` and
+  end in `.pem`, `.crt`, `.cer`, or `.key`. Path-traversal characters and
+  `..` are rejected with 400.
+- `file`: a PEM-encoded certificate or private key. The first 256 bytes
+  must contain `-----BEGIN …-----`.
+
+Response (`201 Created`):
+
+```json
+{ "ok": true, "name": "example.cert.pem", "path": "/certs/example.cert.pem" }
+```
+
+Errors: `400 invalid name (…)`, `400 missing file`, `400 not a PEM file
+— first bytes must contain '-----BEGIN ...'`, `400 expected
+multipart/form-data`.
+
+### `DELETE /api/certs/:name` — remove a PEM file
+
+`:name` is URL-encoded. Returns `204` on success, `404 not found`,
+`400 invalid name` on bad input.
+
 ### `GET /api/settings` — read settings
 
 ```json
@@ -263,12 +389,26 @@ caller in normal operation.
   "url": "https://…",
   "format": "1080p",
   "extraArgs": ["--write-subs"],
-  "cookiesFile": "/cookies/example.com.txt"
+  "cookiesFile": "/cookies/example.com.txt",
+  "username": "me",
+  "password": "secret",
+  "twoFactor": "123456",
+  "videoPassword": "…",
+  "apMso": "DTV",
+  "apUsername": "…",
+  "apPassword": "…",
+  "clientCertFile": "/certs/example.cert.pem",
+  "clientCertKeyFile": "/certs/example.key.pem",
+  "clientCertPassword": "…"
 }
 ```
 
 `id` and `url` are required. `format` is one of the preset keys; anything
-else is passed through verbatim to `yt-dlp -f`. Response:
+else is passed through verbatim to `yt-dlp -f`. The auth fields are flat
+on the `Job` struct (not nested); each non-empty value is appended as
+the corresponding `yt-dlp` flag in `buildArgs`. The downloader logs argv
+with the values of password-bearing flags replaced by `"***"`, so
+service logs never contain plaintext secrets. Response:
 
 ```json
 { "id": "f1a4…", "status": "queued" }

@@ -6,6 +6,16 @@ import { isContainerKey, ContainerKey } from "@/lib/containers";
 import { isCompatKey, CompatKey } from "@/lib/compat";
 import { resolveCookiesFile } from "@/lib/cookies";
 import { postJob, shellSplit } from "@/lib/downloader";
+import {
+  hasAny,
+  mergeAuth,
+  resolveAuthBinding,
+  sanitizeAuthPatch,
+  type AuthOptions,
+} from "@/lib/auth";
+import { resolveCertPath } from "@/lib/certs";
+import path from "node:path";
+import { CERTS_DIR } from "@/lib/env";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -16,6 +26,7 @@ interface EnqueueBody {
   container?: ContainerKey;
   compat?: CompatKey;
   extraArgs?: string;
+  auth?: Partial<AuthOptions>;
 }
 
 export async function POST(req: Request) {
@@ -59,6 +70,23 @@ export async function POST(req: Request) {
     catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }); }
   }
 
+  // Per-job auth override (twoFactor allowed; cert refs accepted as
+  // basenames and resolved against /certs).
+  const authOverride = sanitizeAuthPatch(body.auth, { allowTwoFactor: true });
+  for (const k of ["clientCertFile", "clientCertKeyFile"] as const) {
+    const v = authOverride[k];
+    if (typeof v !== "string" || v === "") continue;
+    const base = path.basename(v);
+    const resolved = resolveCertPath(base);
+    if (!resolved) {
+      return NextResponse.json(
+        { error: `auth.${k}: '${base}' not found in ${CERTS_DIR}` },
+        { status: 400 },
+      );
+    }
+    authOverride[k] = resolved;
+  }
+
   const created: { id: string; url: string }[] = [];
   const now = Date.now();
 
@@ -68,6 +96,8 @@ export async function POST(req: Request) {
     }
     const id = uuid();
     const cookiesFile = resolveCookiesFile(url);
+    const binding = resolveAuthBinding(url);
+    const auth = mergeAuth(binding, authOverride);
 
     insertJob({
       id, url, format: body.format,
@@ -87,6 +117,7 @@ export async function POST(req: Request) {
         compat: compat === "auto" ? undefined : compat,
         extraArgs,
         cookiesFile: cookiesFile ?? undefined,
+        auth: auth && hasAny(auth) ? auth : undefined,
       });
     } catch (e) {
       // Downloader unreachable — mark the row as failed so the user sees it.

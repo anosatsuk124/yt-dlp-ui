@@ -18,6 +18,21 @@ const FORMAT_KEYS = Object.keys(FORMATS) as FormatKey[];
 const CONTAINER_KEYS = Object.keys(CONTAINERS) as ContainerKey[];
 const COMPAT_KEYS = Object.keys(COMPATS) as CompatKey[];
 
+type AuthField =
+  | "username" | "password" | "twoFactor" | "videoPassword"
+  | "apMso" | "apUsername" | "apPassword"
+  | "clientCertFile" | "clientCertKeyFile" | "clientCertPassword";
+
+type AuthForm = Record<AuthField, string>;
+
+const EMPTY_AUTH: AuthForm = {
+  username: "", password: "", twoFactor: "", videoPassword: "",
+  apMso: "", apUsername: "", apPassword: "",
+  clientCertFile: "", clientCertKeyFile: "", clientCertPassword: "",
+};
+
+interface CertEntry { name: string; path: string }
+
 export default function Page() {
   const { connected, jobs } = useJobsWs();
   const { toast } = useToast();
@@ -27,6 +42,8 @@ export default function Page() {
   const [container, setContainer] = useState<ContainerKey>("auto");
   const [compat, setCompat] = useState<CompatKey>("auto");
   const [extraArgs, setExtraArgs] = useState("");
+  const [auth, setAuth] = useState<AuthForm>(EMPTY_AUTH);
+  const [certs, setCerts] = useState<CertEntry[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
   // Seed the presets from saved settings on mount.
@@ -41,8 +58,19 @@ export default function Page() {
         if (s.defaultCompat && isCompatKey(s.defaultCompat)) setCompat(s.defaultCompat);
       })
       .catch(() => { /* leave default */ });
+    fetch("/api/certs")
+      .then(r => r.json())
+      .then((d: { certs: CertEntry[] }) => {
+        if (canceled) return;
+        setCerts(d.certs ?? []);
+      })
+      .catch(() => { /* leave empty */ });
     return () => { canceled = true; };
   }, []);
+
+  function setAuthField<K extends AuthField>(k: K, v: string) {
+    setAuth(a => ({ ...a, [k]: v }));
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -51,6 +79,14 @@ export default function Page() {
       toast({ title: "No URLs", description: "Paste at least one URL." });
       return;
     }
+    // Strip empty auth fields so the request body stays small and the
+    // server's "empty = leave alone" semantics work for per-job overrides.
+    const authPayload: Partial<AuthForm> = {};
+    for (const k of Object.keys(auth) as AuthField[]) {
+      const v = auth[k].trim();
+      if (v !== "") authPayload[k] = v;
+    }
+
     setSubmitting(true);
     try {
       const res = await fetch("/api/jobs", {
@@ -62,12 +98,17 @@ export default function Page() {
           container,
           compat,
           extraArgs: extraArgs.trim() || undefined,
+          auth: Object.keys(authPayload).length ? authPayload : undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
       toast({ title: "Enqueued", description: `${data.jobs?.length ?? list.length} job(s) queued.` });
       setUrls("");
+      // Clear ephemeral secrets (2FA expires in seconds; cleartext passwords
+      // shouldn't linger in the input). Leave non-secret fields alone in
+      // case the user is queueing more URLs against the same site.
+      setAuth(a => ({ ...a, password: "", twoFactor: "", videoPassword: "", apPassword: "", clientCertPassword: "" }));
     } catch (err) {
       toast({ title: "Failed to enqueue", description: (err as Error).message });
     } finally {
@@ -178,6 +219,50 @@ export default function Page() {
               </p>
             </div>
 
+            <details className="rounded-md border bg-card/30">
+              <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">
+                Authentication (optional)
+              </summary>
+              <div className="space-y-3 border-t px-3 py-3">
+                <p className="text-xs text-muted-foreground">
+                  Overrides per-domain credentials saved on the{" "}
+                  <a href="/auth" className="underline">Credentials</a> page.
+                  Empty fields fall through to the saved binding. 2FA codes
+                  are accepted here only (TOTP codes expire too quickly to
+                  persist).
+                </p>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <AuthInput id="qa-user"  label="Username"
+                    value={auth.username} onChange={v => setAuthField("username", v)} />
+                  <AuthInput id="qa-pass"  label="Password" type="password"
+                    value={auth.password} onChange={v => setAuthField("password", v)} />
+                  <AuthInput id="qa-2fa"   label="2FA code"
+                    value={auth.twoFactor} onChange={v => setAuthField("twoFactor", v)}
+                    placeholder="e.g. 123456" />
+                  <AuthInput id="qa-video" label="Video password" type="password"
+                    value={auth.videoPassword} onChange={v => setAuthField("videoPassword", v)} />
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <AuthInput id="qa-ap-mso"  label="Adobe Pass MSO"
+                    value={auth.apMso} onChange={v => setAuthField("apMso", v)} placeholder="e.g. DTV" />
+                  <AuthInput id="qa-ap-user" label="Adobe Pass user"
+                    value={auth.apUsername} onChange={v => setAuthField("apUsername", v)} />
+                  <AuthInput id="qa-ap-pass" label="Adobe Pass password" type="password"
+                    value={auth.apPassword} onChange={v => setAuthField("apPassword", v)} />
+                </div>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <CertPicker id="qa-cert"     label="Client certificate"
+                    value={auth.clientCertFile} onChange={v => setAuthField("clientCertFile", v)}
+                    certs={certs} />
+                  <CertPicker id="qa-cert-key" label="Client cert key"
+                    value={auth.clientCertKeyFile} onChange={v => setAuthField("clientCertKeyFile", v)}
+                    certs={certs} />
+                  <AuthInput id="qa-cert-pass" label="Cert key password" type="password"
+                    value={auth.clientCertPassword} onChange={v => setAuthField("clientCertPassword", v)} />
+                </div>
+              </div>
+            </details>
+
             <div className="space-y-2">
               <Label htmlFor="extra-args">Advanced args (optional)</Label>
               <Input
@@ -252,6 +337,55 @@ export default function Page() {
           ))
         )}
       </div>
+    </div>
+  );
+}
+
+function AuthInput(props: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: string;
+  placeholder?: string;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={props.id}>{props.label}</Label>
+      <Input
+        id={props.id}
+        type={props.type ?? "text"}
+        value={props.value}
+        onChange={e => props.onChange(e.target.value)}
+        placeholder={props.placeholder}
+        autoComplete="off"
+        className="font-mono text-sm"
+      />
+    </div>
+  );
+}
+
+function CertPicker(props: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  certs: CertEntry[];
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={props.id}>{props.label}</Label>
+      <select
+        id={props.id}
+        value={props.value}
+        onChange={e => props.onChange(e.target.value)}
+        className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 font-mono text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      >
+        <option value="">(none)</option>
+        {props.certs.map(c => (
+          <option key={c.name} value={c.name}>{c.name}</option>
+        ))}
+      </select>
     </div>
   );
 }

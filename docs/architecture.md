@@ -110,11 +110,38 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS auth_bindings (
+  domain               TEXT PRIMARY KEY,
+  username             TEXT,
+  password             TEXT,
+  video_password       TEXT,
+  ap_mso               TEXT,
+  ap_username          TEXT,
+  ap_password          TEXT,
+  client_cert_file     TEXT,
+  client_cert_key_file TEXT,
+  client_cert_password TEXT,
+  created_at           INTEGER NOT NULL,
+  updated_at           INTEGER NOT NULL
+);
 ```
 
 `extra_args` is stored as JSON (the shell-split array). `cookies_file` is the
 container-side absolute path that the downloader will pass to `yt-dlp
 --cookies`. Timestamps are Unix-millisecond integers.
+
+`auth_bindings` holds per-domain yt-dlp credentials (username / password /
+video password / Adobe Pass MSO triple / client cert file refs + key
+password). Resolution at enqueue time mirrors the cookies pattern: the
+URL hostname is matched against `domain` with subdomain stripping, the
+binding's fields are merged with any per-job override from the Queue
+form, and the merged set is forwarded to the downloader. The downloader
+never sees the database; it just receives the flat auth fields on the
+`POST /jobs` body. 2FA codes are accepted on the per-job override only
+(TOTP expires in seconds, so there is no column for it). The `jobs`
+table intentionally holds no auth columns — credentials never persist
+into finished-job rows.
 
 `mega_status` (nullable) tracks the optional MEGA upload pipeline: `pending`
 → `uploading` → `uploaded` (or `failed`). `mega_uploaded_at` is set when the
@@ -183,6 +210,7 @@ If `web` restarts mid-download:
 |---|---|---|---|
 | `./downloads` | `/downloads` | web (rw), downloader (rw) | Finished files. Flat layout. |
 | `./cookies` | `/cookies` | web (rw), downloader (**ro**) | Per-domain Netscape cookie files. |
+| `./certs` | `/certs` | web (rw), downloader (**ro**) | PEM client certificates / private keys referenced by `auth_bindings.client_cert_file` / `client_cert_key_file`. |
 | `./data` | `/data` | web (rw) | SQLite database (`app.db`) plus WAL files. |
 | `./tailscale-state` | `/var/lib/tailscale` | tailscale | Tailscale node state. Only with the override. |
 

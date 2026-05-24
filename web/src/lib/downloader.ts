@@ -1,4 +1,5 @@
 import { DOWNLOADER_URL } from "./env";
+import type { AuthOptions } from "./auth";
 
 export interface EnqueuePayload {
   id: string;
@@ -8,17 +9,26 @@ export interface EnqueuePayload {
   compat?: string;
   extraArgs?: string[];
   cookiesFile?: string;
+  // Auth fields are flattened onto the Job struct on the Go side. We send
+  // them at the top level (rather than nested under an "auth" key) so the
+  // downloader struct stays flat and back-compat: missing fields decode to
+  // their zero value and the argv builder skips them.
+  auth?: AuthOptions;
 }
 
 export async function postJob(payload: EnqueuePayload): Promise<void> {
+  // Flatten the auth bag onto the top-level body — see the comment on
+  // EnqueuePayload above.
+  const { auth, ...rest } = payload;
+  const body = { ...rest, ...(auth ?? {}) };
   const res = await fetch(`${DOWNLOADER_URL}/jobs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
   });
   if (!res.ok && res.status !== 202) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`downloader POST /jobs ${res.status}: ${body}`);
+    const txt = await res.text().catch(() => "");
+    throw new Error(`downloader POST /jobs ${res.status}: ${txt}`);
   }
 }
 

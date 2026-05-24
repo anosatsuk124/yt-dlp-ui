@@ -2,14 +2,16 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Download, List, Cookie, Settings } from "lucide-react";
+import { Download, List, Cookie, KeyRound, FileLock2, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const links = [
-  { href: "/queue", label: "Queue", icon: Download },
-  { href: "/history", label: "History", icon: List },
-  { href: "/cookies", label: "Cookies", icon: Cookie },
-  { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/queue",    label: "Queue",       icon: Download },
+  { href: "/history",  label: "History",     icon: List },
+  { href: "/cookies",  label: "Cookies",     icon: Cookie },
+  { href: "/auth",     label: "Credentials", icon: KeyRound },
+  { href: "/certs",    label: "Certs",       icon: FileLock2 },
+  { href: "/settings", label: "Settings",    icon: Settings },
 ];
 
 export function Nav() {

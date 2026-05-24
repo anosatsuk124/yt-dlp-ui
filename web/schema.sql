@@ -26,3 +26,18 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS auth_bindings (
+  domain               TEXT PRIMARY KEY,
+  username             TEXT,
+  password             TEXT,
+  video_password       TEXT,
+  ap_mso               TEXT,
+  ap_username          TEXT,
+  ap_password          TEXT,
+  client_cert_file     TEXT,
+  client_cert_key_file TEXT,
+  client_cert_password TEXT,
+  created_at           INTEGER NOT NULL,
+  updated_at           INTEGER NOT NULL
+);

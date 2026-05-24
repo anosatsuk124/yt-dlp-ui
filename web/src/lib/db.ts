@@ -68,6 +68,27 @@ function migrate(conn: Database.Database): void {
   if (!cols.has("mega_speed"))       conn.exec("ALTER TABLE jobs ADD COLUMN mega_speed TEXT");
   if (!cols.has("container"))        conn.exec("ALTER TABLE jobs ADD COLUMN container TEXT");
   if (!cols.has("compat"))           conn.exec("ALTER TABLE jobs ADD COLUMN compat TEXT");
+
+  // The auth_bindings table is declared in schema.sql so a fresh DB picks it
+  // up via the idempotent CREATE TABLE pass. Re-state it here so a DB that
+  // existed before this feature still gets it after pulling the new code,
+  // without needing to delete app.db.
+  conn.exec(`
+    CREATE TABLE IF NOT EXISTS auth_bindings (
+      domain               TEXT PRIMARY KEY,
+      username             TEXT,
+      password             TEXT,
+      video_password       TEXT,
+      ap_mso               TEXT,
+      ap_username          TEXT,
+      ap_password          TEXT,
+      client_cert_file     TEXT,
+      client_cert_key_file TEXT,
+      client_cert_password TEXT,
+      created_at           INTEGER NOT NULL,
+      updated_at           INTEGER NOT NULL
+    )
+  `);
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -206,6 +227,95 @@ export function listJobsPendingMegaUpload(): JobRow[] {
     ORDER BY finished_at ASC
   `).all() as JobRow[];
 }
+
+// --- auth bindings ---------------------------------------------------------
+
+export interface AuthBindingRow {
+  domain:               string;
+  username:             string | null;
+  password:             string | null;
+  video_password:       string | null;
+  ap_mso:               string | null;
+  ap_username:          string | null;
+  ap_password:          string | null;
+  client_cert_file:     string | null;
+  client_cert_key_file: string | null;
+  client_cert_password: string | null;
+  created_at:           number;
+  updated_at:           number;
+}
+
+export function getAuthBinding(domain: string): AuthBindingRow | undefined {
+  return db()
+    .prepare("SELECT * FROM auth_bindings WHERE domain = ?")
+    .get(domain) as AuthBindingRow | undefined;
+}
+
+export function listAuthBindings(): AuthBindingRow[] {
+  return db()
+    .prepare("SELECT * FROM auth_bindings ORDER BY domain ASC")
+    .all() as AuthBindingRow[];
+}
+
+// upsertAuthBinding writes the row, treating `undefined` fields in `patch`
+// as "leave the existing value alone" (so the UI can save a binding without
+// re-typing every password). An explicit `null` clears the field.
+export function upsertAuthBinding(
+  domain: string,
+  patch: Partial<Omit<AuthBindingRow, "domain" | "created_at" | "updated_at">>,
+): void {
+  const now = Date.now();
+  const existing = getAuthBinding(domain);
+  const merged: AuthBindingRow = {
+    domain,
+    username:             pick(patch.username,             existing?.username             ?? null),
+    password:             pick(patch.password,             existing?.password             ?? null),
+    video_password:       pick(patch.video_password,       existing?.video_password       ?? null),
+    ap_mso:               pick(patch.ap_mso,               existing?.ap_mso               ?? null),
+    ap_username:          pick(patch.ap_username,          existing?.ap_username          ?? null),
+    ap_password:          pick(patch.ap_password,          existing?.ap_password          ?? null),
+    client_cert_file:     pick(patch.client_cert_file,     existing?.client_cert_file     ?? null),
+    client_cert_key_file: pick(patch.client_cert_key_file, existing?.client_cert_key_file ?? null),
+    client_cert_password: pick(patch.client_cert_password, existing?.client_cert_password ?? null),
+    created_at:           existing?.created_at ?? now,
+    updated_at:           now,
+  };
+  db().prepare(`
+    INSERT INTO auth_bindings (
+      domain, username, password, video_password,
+      ap_mso, ap_username, ap_password,
+      client_cert_file, client_cert_key_file, client_cert_password,
+      created_at, updated_at
+    ) VALUES (
+      @domain, @username, @password, @video_password,
+      @ap_mso, @ap_username, @ap_password,
+      @client_cert_file, @client_cert_key_file, @client_cert_password,
+      @created_at, @updated_at
+    )
+    ON CONFLICT(domain) DO UPDATE SET
+      username             = excluded.username,
+      password             = excluded.password,
+      video_password       = excluded.video_password,
+      ap_mso               = excluded.ap_mso,
+      ap_username          = excluded.ap_username,
+      ap_password          = excluded.ap_password,
+      client_cert_file     = excluded.client_cert_file,
+      client_cert_key_file = excluded.client_cert_key_file,
+      client_cert_password = excluded.client_cert_password,
+      updated_at           = excluded.updated_at
+  `).run(merged);
+}
+
+function pick<T>(patchVal: T | undefined, existing: T): T {
+  return patchVal === undefined ? existing : patchVal;
+}
+
+export function deleteAuthBinding(domain: string): boolean {
+  const r = db().prepare("DELETE FROM auth_bindings WHERE domain = ?").run(domain);
+  return r.changes > 0;
+}
+
+// ---------------------------------------------------------------------------
 
 export function getSetting(key: string): string | undefined {
   const r = db().prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined;
