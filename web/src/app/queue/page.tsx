@@ -9,10 +9,12 @@ import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { FORMATS, type FormatKey, isFormatKey } from "@/lib/formats";
+import { CONTAINERS, type ContainerKey, isContainerKey } from "@/lib/containers";
 import { statusBadgeClass } from "@/lib/format";
 import { useJobsWs } from "@/lib/use-jobs-ws";
 
 const FORMAT_KEYS = Object.keys(FORMATS) as FormatKey[];
+const CONTAINER_KEYS = Object.keys(CONTAINERS) as ContainerKey[];
 
 export default function Page() {
   const { connected, jobs } = useJobsWs();
@@ -20,17 +22,19 @@ export default function Page() {
 
   const [urls, setUrls] = useState("");
   const [format, setFormat] = useState<FormatKey>("best");
+  const [container, setContainer] = useState<ContainerKey>("auto");
   const [extraArgs, setExtraArgs] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  // Seed the preset from saved settings on mount.
+  // Seed the presets from saved settings on mount.
   useEffect(() => {
     let canceled = false;
     fetch("/api/settings")
       .then(r => r.json())
-      .then((s: { defaultFormat?: string }) => {
+      .then((s: { defaultFormat?: string; defaultContainer?: string }) => {
         if (canceled) return;
         if (s.defaultFormat && isFormatKey(s.defaultFormat)) setFormat(s.defaultFormat);
+        if (s.defaultContainer && isContainerKey(s.defaultContainer)) setContainer(s.defaultContainer);
       })
       .catch(() => { /* leave default */ });
     return () => { canceled = true; };
@@ -48,7 +52,12 @@ export default function Page() {
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ urls: list, format, extraArgs: extraArgs.trim() || undefined }),
+        body: JSON.stringify({
+          urls: list,
+          format,
+          container,
+          extraArgs: extraArgs.trim() || undefined,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
@@ -113,6 +122,29 @@ export default function Page() {
                   </Button>
                 ))}
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Container</Label>
+              <div className="flex flex-wrap gap-2">
+                {CONTAINER_KEYS.map(key => (
+                  <Button
+                    key={key}
+                    type="button"
+                    size="sm"
+                    variant={container === key ? "default" : "outline"}
+                    onClick={() => setContainer(key)}
+                    disabled={format === "audio"}
+                    title={format === "audio" ? "n/a for audio-only" : undefined}
+                  >
+                    {CONTAINERS[key].label}
+                  </Button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Output container. Auto leaves it to yt-dlp; others remux to
+                that format (no re-encode unless codec-incompatible).
+              </p>
             </div>
 
             <div className="space-y-2">

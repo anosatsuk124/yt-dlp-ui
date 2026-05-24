@@ -45,6 +45,7 @@ type Job struct {
 	ID          string   `json:"id"`
 	URL         string   `json:"url"`
 	Format      string   `json:"format"`
+	Container   string   `json:"container,omitempty"`
 	ExtraArgs   []string `json:"extraArgs,omitempty"`
 	CookiesFile string   `json:"cookiesFile,omitempty"`
 }
@@ -708,7 +709,8 @@ func buildArgs(j Job, downloadDir string) []string {
 		"--print", "before_dl:DEST_PROBE:%(filename)s",
 	}
 
-	switch strings.ToLower(j.Format) {
+	formatLower := strings.ToLower(j.Format)
+	switch formatLower {
 	case "audio":
 		args = append(args, "-f", "ba/b", "-x", "--audio-format", "mp3")
 	case "1080p":
@@ -720,6 +722,20 @@ func buildArgs(j Job, downloadDir string) []string {
 	default:
 		// Pass through raw selectors for forward-compat.
 		args = append(args, "-f", j.Format)
+	}
+
+	// Output container preference. "auto" / empty leaves yt-dlp to pick its
+	// natural container (typically mp4 for HLS, may end up webm/mkv for
+	// other sources). Anything else maps to --merge-output-format, which
+	// container-only re-muxes the merged stream — no full re-encode unless
+	// the codec is fundamentally incompatible.
+	if formatLower != "audio" {
+		switch strings.ToLower(j.Container) {
+		case "", "auto":
+			// no flag
+		case "mp4", "mkv", "webm", "mov":
+			args = append(args, "--merge-output-format", strings.ToLower(j.Container))
+		}
 	}
 
 	if j.CookiesFile != "" {

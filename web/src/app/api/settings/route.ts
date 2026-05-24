@@ -34,14 +34,16 @@ export async function GET() {
     maxParallel: parseInt(getSetting("mega_max_parallel") ?? "2", 10) || 2,
   };
   return NextResponse.json({
-    defaultFormat: getSetting("default_format") ?? "best",
-    maxParallel:   parseInt(getSetting("max_parallel") ?? "2", 10),
+    defaultFormat:    getSetting("default_format") ?? "best",
+    defaultContainer: getSetting("default_container") ?? "auto",
+    maxParallel:      parseInt(getSetting("max_parallel") ?? "2", 10),
     mega,
   });
 }
 
 interface PutBody {
   defaultFormat?: string;
+  defaultContainer?: string;
   maxParallel?: number;
   mega?: {
     enabled?: boolean;
@@ -58,6 +60,13 @@ export async function PUT(req: Request) {
 
   if (body.defaultFormat) {
     setSetting("default_format", body.defaultFormat);
+  }
+  if (body.defaultContainer) {
+    const valid = new Set(["auto", "mp4", "mkv", "webm", "mov"]);
+    if (!valid.has(body.defaultContainer)) {
+      return NextResponse.json({ error: "invalid defaultContainer" }, { status: 400 });
+    }
+    setSetting("default_container", body.defaultContainer);
   }
   if (typeof body.maxParallel === "number" && body.maxParallel >= 1 && body.maxParallel <= 32) {
     setSetting("max_parallel", String(body.maxParallel));

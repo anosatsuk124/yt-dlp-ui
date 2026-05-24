@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
-import { insertJob, listActiveJobs } from "@/lib/db";
+import { insertJob, listActiveJobs, getSetting } from "@/lib/db";
 import { isFormatKey, FormatKey } from "@/lib/formats";
+import { isContainerKey, ContainerKey } from "@/lib/containers";
 import { resolveCookiesFile } from "@/lib/cookies";
 import { postJob, shellSplit } from "@/lib/downloader";
 
@@ -11,6 +12,7 @@ export const dynamic = "force-dynamic";
 interface EnqueueBody {
   urls: string[];
   format: FormatKey;
+  container?: ContainerKey;
   extraArgs?: string;
 }
 
@@ -25,6 +27,18 @@ export async function POST(req: Request) {
   const urls = (body.urls ?? []).map(s => s.trim()).filter(Boolean);
   if (urls.length === 0) return NextResponse.json({ error: "no urls" }, { status: 400 });
   if (!isFormatKey(body.format)) return NextResponse.json({ error: "invalid format" }, { status: 400 });
+
+  // Container is optional; fall back to the saved default. Validate either way.
+  let container: ContainerKey;
+  if (body.container !== undefined) {
+    if (!isContainerKey(body.container)) {
+      return NextResponse.json({ error: "invalid container" }, { status: 400 });
+    }
+    container = body.container;
+  } else {
+    const fromSetting = getSetting("default_container") ?? "auto";
+    container = isContainerKey(fromSetting) ? fromSetting : "auto";
+  }
 
   let extraArgs: string[] = [];
   if (body.extraArgs && body.extraArgs.trim().length > 0) {
@@ -44,6 +58,7 @@ export async function POST(req: Request) {
 
     insertJob({
       id, url, format: body.format,
+      container,
       extra_args: extraArgs.length ? JSON.stringify(extraArgs) : null,
       cookies_file: cookiesFile,
       status: "queued",
@@ -51,7 +66,13 @@ export async function POST(req: Request) {
     });
 
     try {
-      await postJob({ id, url, format: body.format, extraArgs, cookiesFile: cookiesFile ?? undefined });
+      await postJob({
+        id, url,
+        format: body.format,
+        container: container === "auto" ? undefined : container,
+        extraArgs,
+        cookiesFile: cookiesFile ?? undefined,
+      });
     } catch (e) {
       // Downloader unreachable — mark the row as failed so the user sees it.
       const { updateJobStatus } = await import("@/lib/db");

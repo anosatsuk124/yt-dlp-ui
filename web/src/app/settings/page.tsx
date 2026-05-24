@@ -7,8 +7,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { FORMATS, type FormatKey, isFormatKey } from "@/lib/formats";
+import { CONTAINERS, type ContainerKey, isContainerKey } from "@/lib/containers";
 
 const FORMAT_KEYS = Object.keys(FORMATS) as FormatKey[];
+const CONTAINER_KEYS = Object.keys(CONTAINERS) as ContainerKey[];
 
 interface MegaSettings {
   enabled: boolean;
@@ -31,6 +33,7 @@ const DEFAULT_MEGA: MegaSettings = {
 export default function Page() {
   const { toast } = useToast();
   const [defaultFormat, setDefaultFormat] = useState<FormatKey>("best");
+  const [defaultContainer, setDefaultContainer] = useState<ContainerKey>("auto");
   const [maxParallel, setMaxParallel] = useState(2);
   const [mega, setMega] = useState<MegaSettings>(DEFAULT_MEGA);
   const [loading, setLoading] = useState(true);
@@ -41,11 +44,15 @@ export default function Page() {
       .then(r => r.json())
       .then((s: {
         defaultFormat?: string;
+        defaultContainer?: string;
         maxParallel?: number;
         mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string; maxParallel?: number };
       }) => {
         if (s.defaultFormat && isFormatKey(s.defaultFormat)) {
           setDefaultFormat(s.defaultFormat);
+        }
+        if (s.defaultContainer && isContainerKey(s.defaultContainer)) {
+          setDefaultContainer(s.defaultContainer);
         }
         if (typeof s.maxParallel === "number") setMaxParallel(s.maxParallel);
         if (s.mega) {
@@ -88,6 +95,7 @@ export default function Page() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           defaultFormat,
+          defaultContainer,
           maxParallel,
           mega: {
             enabled: mega.enabled,
@@ -141,6 +149,27 @@ export default function Page() {
                     </Button>
                   ))}
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Default container</Label>
+                <div className="flex flex-wrap gap-2">
+                  {CONTAINER_KEYS.map(key => (
+                    <Button
+                      key={key}
+                      type="button"
+                      size="sm"
+                      variant={defaultContainer === key ? "default" : "outline"}
+                      onClick={() => setDefaultContainer(key)}
+                    >
+                      {CONTAINERS[key].label}
+                    </Button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Used when a job doesn't pick its own container. Auto keeps
+                  whatever yt-dlp's natural muxer picks.
+                </p>
               </div>
 
               <div className="space-y-2">
