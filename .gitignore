@@ -1,0 +1,24 @@
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Go
+/downloader/downloader
+/downloader/bin/
+
+# Runtime data (bind-mount targets)
+/downloads/
+/cookies/
+/data/
+/tailscale-state/
+
+# Environment
+.env
+.env.local
+.env.*.local
