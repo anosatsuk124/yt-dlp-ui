@@ -22,10 +22,33 @@ import {
 } from "./db";
 import { MegaClient, loadMegaConfig } from "./mega";
 
-// In-flight uploads keyed by jobId. Used by cancelMegaUpload to abort
-// an active stream. Items only live here between markMegaUploading and
-// the worker's finally block.
-const activeUploads = new Map<string, AbortController>();
+// Next.js's App Router and the custom server.ts load lib modules through
+// separate module graphs in some configurations, so plain module-scoped
+// state (queue, in-flight controllers, worker count) ends up duplicated:
+// the API route's mega-uploader instance is not the same as the one the
+// worker pool is using. Hang the state off globalThis so both views agree.
+interface MegaUploaderState {
+  queue: string[];
+  queued: Set<string>;
+  activeUploads: Map<string, AbortController>;
+  activeWorkers: number;
+}
+const G = globalThis as unknown as { __megaUploaderState?: MegaUploaderState };
+if (!G.__megaUploaderState) {
+  G.__megaUploaderState = {
+    queue: [],
+    queued: new Set<string>(),
+    activeUploads: new Map<string, AbortController>(),
+    activeWorkers: 0,
+  };
+}
+const state: MegaUploaderState = G.__megaUploaderState;
+const queue = state.queue;
+const queued = state.queued;
+const activeUploads = state.activeUploads;
+const getActiveWorkers = () => state.activeWorkers;
+const incActiveWorkers = () => { state.activeWorkers += 1; };
+const decActiveWorkers = () => { state.activeWorkers -= 1; };
 
 const PROGRESS_THROTTLE_MS = 1500;
 
@@ -42,10 +65,6 @@ function formatBytesPerSec(bps: number): string {
   if (v >= 10)  return `${v.toFixed(1)} ${units[i]}`;
   return `${v.toFixed(2)} ${units[i]}`;
 }
-
-const queue: string[] = [];
-const queued = new Set<string>();
-let activeWorkers = 0;
 
 function getMaxParallel(): number {
   const raw = parseInt(getSetting("mega_max_parallel") ?? "2", 10);
@@ -76,16 +95,16 @@ export function startMegaUploader(): void {
 
 function spawnWorkers(): void {
   const max = getMaxParallel();
-  while (activeWorkers < max && queue.length > 0) {
-    void workerLoop(activeWorkers + 1);
+  while (getActiveWorkers() < max && queue.length > 0) {
+    void workerLoop(getActiveWorkers() + 1);
   }
 }
 
 async function workerLoop(workerId: number): Promise<void> {
   // Note: this increment runs synchronously before the first await, so
-  // spawnWorkers's `activeWorkers < max` check stays accurate as workers
-  // are spawned in a tight loop.
-  activeWorkers++;
+  // spawnWorkers's `getActiveWorkers() < max` check stays accurate as
+  // workers are spawned in a tight loop.
+  incActiveWorkers();
   try {
     while (queue.length > 0) {
       const cfg = loadMegaConfig();
@@ -95,7 +114,7 @@ async function workerLoop(workerId: number): Promise<void> {
       }
       // Honour live changes to mega_max_parallel — if the setting was
       // reduced, the extra worker gracefully exits at the top of the loop.
-      if (activeWorkers > getMaxParallel()) {
+      if (getActiveWorkers() > getMaxParallel()) {
         console.log(`[mega/w${workerId}] over limit; exiting`);
         return;
       }
@@ -106,7 +125,7 @@ async function workerLoop(workerId: number): Promise<void> {
         const folder = await client.ensureFolder(cfg.folder);
         // Drain as many items as we can with this connection.
         while (queue.length > 0) {
-          if (activeWorkers > getMaxParallel()) break;
+          if (getActiveWorkers() > getMaxParallel()) break;
           const id = queue.shift();
           if (!id) break;
           queued.delete(id);
@@ -123,7 +142,7 @@ async function workerLoop(workerId: number): Promise<void> {
       }
     }
   } finally {
-    activeWorkers--;
+    decActiveWorkers();
   }
 }
 
