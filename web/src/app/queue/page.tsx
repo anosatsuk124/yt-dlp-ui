@@ -168,11 +168,11 @@ export default function Page() {
                   </span>
                 </div>
 
-                <Progress value={Math.max(0, Math.min(100, job.progress))} />
+                <Progress value={Math.max(0, Math.min(100, job.progress ?? 0))} />
 
                 <div className="flex items-center justify-between gap-4 text-xs text-muted-foreground">
                   <div className="flex gap-4">
-                    <span>{job.progress.toFixed(1)}%</span>
+                    <span>{(job.progress ?? 0).toFixed(1)}%</span>
                     {job.speed && <span>{job.speed}</span>}
                     {job.eta && <span>ETA {job.eta}</span>}
                   </div>

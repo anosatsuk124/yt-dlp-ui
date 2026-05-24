@@ -14,7 +14,10 @@ type SnapshotEvent = { type: "snapshot"; jobs: JobRow[] };
 type ProgressEvent = {
   type: "progress";
   id: string;
-  progress: number;
+  // Optional because the downloader's Event struct uses `json:"...,omitempty"`,
+  // so progress=0 (start of download, total bytes not yet known) yields
+  // an event without the field at all.
+  progress?: number;
   speed?: string | null;
   eta?: string | null;
   downloaded?: number;
@@ -84,9 +87,12 @@ export function useJobsWs(): { connected: boolean; jobs: JobRow[] } {
           case "progress": {
             const existing = map.get(ev.id);
             if (!existing) return;
+            // Go's encoding/json omits zero-valued fields (omitempty), so a
+            // progress event with downloaded_bytes=0 has no `progress` field.
+            // Treat any missing numeric as "keep current".
             map.set(ev.id, {
               ...existing,
-              progress: ev.progress,
+              progress: typeof ev.progress === "number" ? ev.progress : existing.progress,
               speed: ev.speed ?? existing.speed,
               eta: ev.eta ?? existing.eta,
             });
