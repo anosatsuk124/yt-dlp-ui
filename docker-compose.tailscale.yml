@@ -1,0 +1,38 @@
+# Override that joins the stack to a Tailscale tailnet and exposes the
+# web UI only inside the tailnet (Funnel is explicitly disabled).
+#
+# Usage:
+#   cp .env.example .env  # then set TS_AUTHKEY and (optionally) TS_HOSTNAME
+#   docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d --build
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: ${TS_HOSTNAME:-yt-dlp-ui}
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?TS_AUTHKEY must be set}
+      TS_HOSTNAME: ${TS_HOSTNAME:-yt-dlp-ui}
+      TS_STATE_DIR: /var/lib/tailscale
+      TS_EXTRA_ARGS: --ssh
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - ./tailscale-state:/var/lib/tailscale
+      - ./tailscale/serve.json:/config/serve.json:ro
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - net_admin
+      - sys_module
+    restart: unless-stopped
+
+  # Pin the web service to the tailscale container's network namespace so
+  # it is reachable as ${TS_HOSTNAME}.<tailnet>.ts.net (and ONLY there —
+  # the host port published by the base compose is reset below).
+  web:
+    network_mode: service:tailscale
+    ports: !reset []
+    depends_on:
+      - downloader
+      - tailscale
+
+  # The downloader stays on the default bridge network — only `web`
+  # needs to be on the tailnet. `web` reaches it via the service name.

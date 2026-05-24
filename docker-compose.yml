@@ -1,0 +1,30 @@
+services:
+  web:
+    build: ./web
+    environment:
+      DOWNLOADER_URL: http://downloader:8080
+      DOWNLOAD_DIR: /downloads
+      COOKIES_DIR: /cookies
+      DB_PATH: /data/app.db
+      PORT: "3000"
+    volumes:
+      - ${HOST_DOWNLOAD_DIR:-./downloads}:/downloads
+      - ${HOST_COOKIES_DIR:-./cookies}:/cookies
+      - ${HOST_DATA_DIR:-./data}:/data
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - downloader
+    restart: unless-stopped
+
+  downloader:
+    build: ./downloader
+    environment:
+      DOWNLOADER_MAX_PARALLEL: "${DOWNLOADER_MAX_PARALLEL:-2}"
+      DOWNLOAD_DIR: /downloads
+      COOKIES_DIR: /cookies
+      PORT: "8080"
+    volumes:
+      - ${HOST_DOWNLOAD_DIR:-./downloads}:/downloads
+      - ${HOST_COOKIES_DIR:-./cookies}:/cookies:ro
+    restart: unless-stopped
