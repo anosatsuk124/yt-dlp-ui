@@ -12,8 +12,11 @@ import {
   listActiveJobs,
   updateJobStatus,
   updateJobProgress,
+  markMegaPending,
 } from "./src/lib/db";
 import { DOWNLOADER_URL } from "./src/lib/env";
+import { loadMegaConfig } from "./src/lib/mega";
+import { enqueueMegaUpload, startMegaUploader } from "./src/lib/mega-uploader";
 
 const dev = process.env.NODE_ENV !== "production";
 const port = parseInt(process.env.PORT ?? "3000", 10);
@@ -64,6 +67,14 @@ function applyEvent(event: DownloaderEvent) {
       updateJobStatus(event.id, event.status as any, extras);
     } catch (e) { console.error("db status update failed:", e); }
     lastProgressWrite.delete(event.id);
+    if (event.status === "completed" && event.filePath) {
+      try {
+        if (loadMegaConfig().enabled) {
+          markMegaPending(event.id);
+          enqueueMegaUpload(event.id);
+        }
+      } catch (e) { console.error("mega enqueue failed:", e); }
+    }
   } else if (event.type === "title" && event.title) {
     try {
       updateJobStatus(event.id, ("running" as any), { title: event.title });
@@ -139,6 +150,7 @@ app.prepare().then(() => {
 
   const controller = new AbortController();
   void consumeEvents(controller.signal);
+  startMegaUploader();
 
   server.listen(port, hostname, () => {
     console.log(`> ready on http://${hostname}:${port}`);

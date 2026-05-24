@@ -86,16 +86,7 @@ export default function Page() {
                       {timeAgo(job.finished_at ?? job.created_at)}
                     </TableCell>
                     <TableCell>
-                      {file ? (
-                        <a
-                          href={`/api/files/${encodeURIComponent(file)}`}
-                          className="text-sm text-primary underline-offset-2 hover:underline"
-                        >
-                          Download
-                        </a>
-                      ) : (
-                        <span className="text-sm text-muted-foreground">—</span>
-                      )}
+                      <ActionCell job={job} file={file} />
                     </TableCell>
                   </TableRow>
                 );
@@ -112,4 +103,47 @@ export default function Page() {
       )}
     </div>
   );
+}
+
+function ActionCell({ job, file }: { job: JobRow; file: string | null }) {
+  switch (job.mega_status) {
+    case "uploaded": {
+      const when = job.mega_uploaded_at
+        ? new Date(job.mega_uploaded_at).toLocaleString()
+        : undefined;
+      return (
+        <span
+          className="text-sm text-emerald-600"
+          title={when ? `uploaded to MEGA at ${when}` : "uploaded to MEGA"}
+        >
+          ✓ MEGA
+        </span>
+      );
+    }
+    case "uploading":
+      return <span className="text-sm text-muted-foreground">MEGA…</span>;
+    case "pending":
+      return <span className="text-sm text-muted-foreground">MEGA queued</span>;
+    case "failed":
+      return (
+        <span
+          className="text-sm text-destructive"
+          title={job.mega_error ?? "MEGA upload failed"}
+        >
+          MEGA failed
+        </span>
+      );
+    default:
+      if (file) {
+        return (
+          <a
+            href={`/api/files/${encodeURIComponent(file)}`}
+            className="text-sm text-primary underline-offset-2 hover:underline"
+          >
+            Download
+          </a>
+        );
+      }
+      return <span className="text-sm text-muted-foreground">—</span>;
+  }
 }
