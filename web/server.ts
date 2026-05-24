@@ -106,8 +106,15 @@ async function reconcileNow(reason: string) {
     console.log(`[reconcile/${reason}] downloader unreachable, treating all active rows as orphan:`, (e as Error).message);
   }
   try {
-    const n = reconcileOrphans(alive);
-    if (n > 0) console.log(`[reconcile/${reason}] marked ${n} stale job(s) as failed`);
+    const paths = reconcileOrphans(alive);
+    if (paths.length > 0) {
+      console.log(`[reconcile/${reason}] marked ${paths.length} stale job(s) as failed`);
+      // Each orphaned row may have left a half-written file and a swarm of
+      // .part-Frag<N>.part fragments behind. Sweep them by [id] bracket.
+      let total = 0;
+      for (const p of paths) total += cleanupByIdBracket(p);
+      if (total > 0) console.log(`[reconcile/${reason}] removed ${total} partial file(s)`);
+    }
   } catch (e) {
     console.log(`[reconcile/${reason}] failed:`, (e as Error).message);
   }

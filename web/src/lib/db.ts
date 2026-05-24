@@ -131,11 +131,13 @@ export function deleteJob(id: string): void {
 // Mark any rows still tagged 'running' or 'queued' as 'failed'. Called on
 // startup, after we've checked which ids the downloader is actually still
 // tracking — anything not in `aliveIds` is an orphan from a previous run.
-export function reconcileOrphans(aliveIds: Set<string>): number {
+// Returns the captured file_path of each row that was marked, so the caller
+// can sweep any leftover .part / .ytdl / fragment files.
+export function reconcileOrphans(aliveIds: Set<string>): string[] {
   const stale = db().prepare(
-    "SELECT id FROM jobs WHERE status IN ('queued','running')",
-  ).all() as { id: string }[];
-  if (stale.length === 0) return 0;
+    "SELECT id, file_path FROM jobs WHERE status IN ('queued','running')",
+  ).all() as { id: string; file_path: string | null }[];
+  if (stale.length === 0) return [];
 
   const now = Date.now();
   const stmt = db().prepare(`
@@ -145,13 +147,13 @@ export function reconcileOrphans(aliveIds: Set<string>): number {
            finished_at = ?
      WHERE id = ?
   `);
-  let n = 0;
-  for (const { id } of stale) {
+  const cleanupPaths: string[] = [];
+  for (const { id, file_path } of stale) {
     if (aliveIds.has(id)) continue;
     stmt.run(now, id);
-    n += 1;
+    if (file_path) cleanupPaths.push(file_path);
   }
-  return n;
+  return cleanupPaths;
 }
 
 export function markMegaPending(id: string): void {
