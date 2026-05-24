@@ -509,22 +509,30 @@ func (p *Pool) fail(id, msg string) {
 
 // handleStdoutLine parses one line of yt-dlp stdout and emits events.
 func (p *Pool) handleStdoutLine(id, line string, errBuf *rollingBuf, filePath *atomic.Value) {
-	// PROGRESS <down>/<total> <speed> <eta> <status>
+	// PROGRESS <down>/<total> <speed_bps> <eta_sec> <frag_idx>/<frag_count> <status>
 	if strings.HasPrefix(line, "PROGRESS ") {
 		fields := strings.Fields(line)
-		if len(fields) >= 5 {
+		if len(fields) >= 6 {
 			dt := strings.SplitN(fields[1], "/", 2)
 			var down, total int64
 			if len(dt) == 2 {
 				down = parseInt64(dt[0])
 				total = parseInt64(dt[1])
 			}
+			fc := strings.SplitN(fields[4], "/", 2)
+			var fragIdx, fragCount int64
+			if len(fc) == 2 {
+				fragIdx = parseInt64(fc[0])
+				fragCount = parseInt64(fc[1])
+			}
 			var pct float64
 			if total > 0 {
 				pct = float64(down) / float64(total) * 100
+			} else if fragCount > 0 {
+				pct = float64(fragIdx) / float64(fragCount) * 100
 			}
-			speed := fields[2]
-			eta := fields[3]
+			speed := formatBytesPerSec(fields[2])
+			eta := formatETASeconds(fields[3])
 			p.registry.update(id, func(s *JobState) {
 				s.Progress = pct
 				s.Speed = speed
@@ -577,6 +585,10 @@ func parseInt64(s string) int64 {
 	if s == "" || s == "NA" {
 		return 0
 	}
+	// yt-dlp sometimes emits floats here (e.g. "12.5"). Take the integer part.
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		s = s[:i]
+	}
 	n, err := strconv.ParseInt(s, 10, 64)
 	if err != nil {
 		return 0
@@ -584,12 +596,66 @@ func parseInt64(s string) int64 {
 	return n
 }
 
+// formatBytesPerSec turns yt-dlp's raw "%(progress.speed)s" (a bytes/sec
+// float as string, or "NA") into a compact human-readable rate like
+// "17.3 MiB/s". Returns "" for NA / unparseable input so the UI can render
+// nothing instead of "0 B/s".
+func formatBytesPerSec(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "NA" {
+		return ""
+	}
+	v, err := strconv.ParseFloat(s, 64)
+	if err != nil || v <= 0 {
+		return ""
+	}
+	units := []string{"B/s", "KiB/s", "MiB/s", "GiB/s", "TiB/s"}
+	i := 0
+	for v >= 1024 && i < len(units)-1 {
+		v /= 1024
+		i++
+	}
+	if v >= 100 {
+		return fmt.Sprintf("%.0f %s", v, units[i])
+	}
+	if v >= 10 {
+		return fmt.Sprintf("%.1f %s", v, units[i])
+	}
+	return fmt.Sprintf("%.2f %s", v, units[i])
+}
+
+// formatETASeconds turns yt-dlp's raw "%(progress.eta)s" (a seconds float
+// as string, or "NA") into "M:SS" or "H:MM:SS". Returns "" for NA.
+func formatETASeconds(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "NA" {
+		return ""
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil || f < 0 {
+		return ""
+	}
+	sec := int(f + 0.5)
+	h := sec / 3600
+	m := (sec % 3600) / 60
+	s2 := sec % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s2)
+	}
+	return fmt.Sprintf("%d:%02d", m, s2)
+}
+
 // buildArgs constructs the yt-dlp command line for a job.
 func buildArgs(j Job, downloadDir string) []string {
 	args := []string{
 		"--newline", "--no-color", "--progress",
 		"--progress-template",
-		"PROGRESS %(progress.downloaded_bytes)s/%(progress.total_bytes)s %(progress.speed)s %(progress.eta)s %(progress.status)s",
+		// Six space-separated fields after the literal PROGRESS tag:
+		//   down/total  speed  eta  frag_idx/frag_count  status
+		// Speed is bytes/sec, eta is seconds. The fragment pair is
+		// non-NA for HLS/DASH downloads (e.g. Twitch) where the byte
+		// totals are NA — we use it as the fallback progress source.
+		"PROGRESS %(progress.downloaded_bytes)s/%(progress.total_bytes)s %(progress.speed)s %(progress.eta)s %(progress.fragment_index)s/%(progress.fragment_count)s %(progress.status)s",
 	}
 
 	switch strings.ToLower(j.Format) {
