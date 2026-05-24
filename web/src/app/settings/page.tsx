@@ -8,9 +8,11 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
 import { FORMATS, type FormatKey, isFormatKey } from "@/lib/formats";
 import { CONTAINERS, type ContainerKey, isContainerKey } from "@/lib/containers";
+import { COMPATS, type CompatKey, isCompatKey } from "@/lib/compat";
 
 const FORMAT_KEYS = Object.keys(FORMATS) as FormatKey[];
 const CONTAINER_KEYS = Object.keys(CONTAINERS) as ContainerKey[];
+const COMPAT_KEYS = Object.keys(COMPATS) as CompatKey[];
 
 interface MegaSettings {
   enabled: boolean;
@@ -34,6 +36,7 @@ export default function Page() {
   const { toast } = useToast();
   const [defaultFormat, setDefaultFormat] = useState<FormatKey>("best");
   const [defaultContainer, setDefaultContainer] = useState<ContainerKey>("auto");
+  const [defaultCompat, setDefaultCompat] = useState<CompatKey>("auto");
   const [maxParallel, setMaxParallel] = useState(2);
   const [mega, setMega] = useState<MegaSettings>(DEFAULT_MEGA);
   const [loading, setLoading] = useState(true);
@@ -45,6 +48,7 @@ export default function Page() {
       .then((s: {
         defaultFormat?: string;
         defaultContainer?: string;
+        defaultCompat?: string;
         maxParallel?: number;
         mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string; maxParallel?: number };
       }) => {
@@ -53,6 +57,9 @@ export default function Page() {
         }
         if (s.defaultContainer && isContainerKey(s.defaultContainer)) {
           setDefaultContainer(s.defaultContainer);
+        }
+        if (s.defaultCompat && isCompatKey(s.defaultCompat)) {
+          setDefaultCompat(s.defaultCompat);
         }
         if (typeof s.maxParallel === "number") setMaxParallel(s.maxParallel);
         if (s.mega) {
@@ -96,6 +103,7 @@ export default function Page() {
         body: JSON.stringify({
           defaultFormat,
           defaultContainer,
+          defaultCompat,
           maxParallel,
           mega: {
             enabled: mega.enabled,
@@ -169,6 +177,28 @@ export default function Page() {
                 <p className="text-xs text-muted-foreground">
                   Used when a job doesn't pick its own container. Auto keeps
                   whatever yt-dlp's natural muxer picks.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Default compatibility profile</Label>
+                <div className="flex flex-wrap gap-2">
+                  {COMPAT_KEYS.map(key => (
+                    <Button
+                      key={key}
+                      type="button"
+                      size="sm"
+                      variant={defaultCompat === key ? "default" : "outline"}
+                      onClick={() => setDefaultCompat(key)}
+                      title={COMPATS[key].hint}
+                    >
+                      {COMPATS[key].label}
+                    </Button>
+                  ))}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {COMPATS[defaultCompat].hint} iOS overrides the container
+                  setting and always saves as MP4.
                 </p>
               </div>
 

@@ -3,6 +3,7 @@ import { v4 as uuid } from "uuid";
 import { insertJob, listActiveJobs, getSetting } from "@/lib/db";
 import { isFormatKey, FormatKey } from "@/lib/formats";
 import { isContainerKey, ContainerKey } from "@/lib/containers";
+import { isCompatKey, CompatKey } from "@/lib/compat";
 import { resolveCookiesFile } from "@/lib/cookies";
 import { postJob, shellSplit } from "@/lib/downloader";
 
@@ -13,6 +14,7 @@ interface EnqueueBody {
   urls: string[];
   format: FormatKey;
   container?: ContainerKey;
+  compat?: CompatKey;
   extraArgs?: string;
 }
 
@@ -40,6 +42,17 @@ export async function POST(req: Request) {
     container = isContainerKey(fromSetting) ? fromSetting : "auto";
   }
 
+  let compat: CompatKey;
+  if (body.compat !== undefined) {
+    if (!isCompatKey(body.compat)) {
+      return NextResponse.json({ error: "invalid compat" }, { status: 400 });
+    }
+    compat = body.compat;
+  } else {
+    const fromSetting = getSetting("default_compat") ?? "auto";
+    compat = isCompatKey(fromSetting) ? fromSetting : "auto";
+  }
+
   let extraArgs: string[] = [];
   if (body.extraArgs && body.extraArgs.trim().length > 0) {
     try { extraArgs = shellSplit(body.extraArgs); }
@@ -59,6 +72,7 @@ export async function POST(req: Request) {
     insertJob({
       id, url, format: body.format,
       container,
+      compat,
       extra_args: extraArgs.length ? JSON.stringify(extraArgs) : null,
       cookies_file: cookiesFile,
       status: "queued",
@@ -70,6 +84,7 @@ export async function POST(req: Request) {
         id, url,
         format: body.format,
         container: container === "auto" ? undefined : container,
+        compat: compat === "auto" ? undefined : compat,
         extraArgs,
         cookiesFile: cookiesFile ?? undefined,
       });

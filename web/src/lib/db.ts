@@ -29,6 +29,7 @@ export interface JobRow {
   mega_progress: number;
   mega_speed: string | null;
   container: string | null;
+  compat: string | null;
 }
 
 let _db: Database.Database | null = null;
@@ -66,14 +67,15 @@ function migrate(conn: Database.Database): void {
   if (!cols.has("mega_progress"))    conn.exec("ALTER TABLE jobs ADD COLUMN mega_progress REAL NOT NULL DEFAULT 0");
   if (!cols.has("mega_speed"))       conn.exec("ALTER TABLE jobs ADD COLUMN mega_speed TEXT");
   if (!cols.has("container"))        conn.exec("ALTER TABLE jobs ADD COLUMN container TEXT");
+  if (!cols.has("compat"))           conn.exec("ALTER TABLE jobs ADD COLUMN compat TEXT");
 }
 
 // --- helpers ---------------------------------------------------------------
 
 export function insertJob(row: Omit<JobRow, "progress" | "speed" | "eta" | "title" | "file_path" | "error" | "started_at" | "finished_at" | "mega_status" | "mega_uploaded_at" | "mega_error" | "mega_progress" | "mega_speed">): void {
   db().prepare(`
-    INSERT INTO jobs (id, url, format, container, extra_args, cookies_file, status, created_at)
-    VALUES (@id, @url, @format, @container, @extra_args, @cookies_file, @status, @created_at)
+    INSERT INTO jobs (id, url, format, container, compat, extra_args, cookies_file, status, created_at)
+    VALUES (@id, @url, @format, @container, @compat, @extra_args, @cookies_file, @status, @created_at)
   `).run(row);
 }
 

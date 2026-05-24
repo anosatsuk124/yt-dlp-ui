@@ -10,11 +10,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
 import { FORMATS, type FormatKey, isFormatKey } from "@/lib/formats";
 import { CONTAINERS, type ContainerKey, isContainerKey } from "@/lib/containers";
+import { COMPATS, type CompatKey, isCompatKey } from "@/lib/compat";
 import { statusBadgeClass } from "@/lib/format";
 import { useJobsWs } from "@/lib/use-jobs-ws";
 
 const FORMAT_KEYS = Object.keys(FORMATS) as FormatKey[];
 const CONTAINER_KEYS = Object.keys(CONTAINERS) as ContainerKey[];
+const COMPAT_KEYS = Object.keys(COMPATS) as CompatKey[];
 
 export default function Page() {
   const { connected, jobs } = useJobsWs();
@@ -23,6 +25,7 @@ export default function Page() {
   const [urls, setUrls] = useState("");
   const [format, setFormat] = useState<FormatKey>("best");
   const [container, setContainer] = useState<ContainerKey>("auto");
+  const [compat, setCompat] = useState<CompatKey>("auto");
   const [extraArgs, setExtraArgs] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -31,10 +34,11 @@ export default function Page() {
     let canceled = false;
     fetch("/api/settings")
       .then(r => r.json())
-      .then((s: { defaultFormat?: string; defaultContainer?: string }) => {
+      .then((s: { defaultFormat?: string; defaultContainer?: string; defaultCompat?: string }) => {
         if (canceled) return;
         if (s.defaultFormat && isFormatKey(s.defaultFormat)) setFormat(s.defaultFormat);
         if (s.defaultContainer && isContainerKey(s.defaultContainer)) setContainer(s.defaultContainer);
+        if (s.defaultCompat && isCompatKey(s.defaultCompat)) setCompat(s.defaultCompat);
       })
       .catch(() => { /* leave default */ });
     return () => { canceled = true; };
@@ -56,6 +60,7 @@ export default function Page() {
           urls: list,
           format,
           container,
+          compat,
           extraArgs: extraArgs.trim() || undefined,
         }),
       });
@@ -134,8 +139,12 @@ export default function Page() {
                     size="sm"
                     variant={container === key ? "default" : "outline"}
                     onClick={() => setContainer(key)}
-                    disabled={format === "audio"}
-                    title={format === "audio" ? "n/a for audio-only" : undefined}
+                    disabled={format === "audio" || compat === "ios"}
+                    title={
+                      format === "audio" ? "n/a for audio-only" :
+                      compat === "ios" ? "iOS compatibility forces MP4" :
+                      undefined
+                    }
                   >
                     {CONTAINERS[key].label}
                   </Button>
@@ -144,6 +153,28 @@ export default function Page() {
               <p className="text-xs text-muted-foreground">
                 Output container. Auto leaves it to yt-dlp; others remux to
                 that format (no re-encode unless codec-incompatible).
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Compatibility</Label>
+              <div className="flex flex-wrap gap-2">
+                {COMPAT_KEYS.map(key => (
+                  <Button
+                    key={key}
+                    type="button"
+                    size="sm"
+                    variant={compat === key ? "default" : "outline"}
+                    onClick={() => setCompat(key)}
+                    disabled={format === "audio"}
+                    title={format === "audio" ? "n/a for audio-only" : COMPATS[key].hint}
+                  >
+                    {COMPATS[key].label}
+                  </Button>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {COMPATS[compat].hint}
               </p>
             </div>
 

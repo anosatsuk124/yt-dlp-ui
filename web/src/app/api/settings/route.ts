@@ -36,6 +36,7 @@ export async function GET() {
   return NextResponse.json({
     defaultFormat:    getSetting("default_format") ?? "best",
     defaultContainer: getSetting("default_container") ?? "auto",
+    defaultCompat:    getSetting("default_compat") ?? "auto",
     maxParallel:      parseInt(getSetting("max_parallel") ?? "2", 10),
     mega,
   });
@@ -44,6 +45,7 @@ export async function GET() {
 interface PutBody {
   defaultFormat?: string;
   defaultContainer?: string;
+  defaultCompat?: string;
   maxParallel?: number;
   mega?: {
     enabled?: boolean;
@@ -67,6 +69,13 @@ export async function PUT(req: Request) {
       return NextResponse.json({ error: "invalid defaultContainer" }, { status: 400 });
     }
     setSetting("default_container", body.defaultContainer);
+  }
+  if (body.defaultCompat) {
+    const valid = new Set(["auto", "ios"]);
+    if (!valid.has(body.defaultCompat)) {
+      return NextResponse.json({ error: "invalid defaultCompat" }, { status: 400 });
+    }
+    setSetting("default_compat", body.defaultCompat);
   }
   if (typeof body.maxParallel === "number" && body.maxParallel >= 1 && body.maxParallel <= 32) {
     setSetting("max_parallel", String(body.maxParallel));

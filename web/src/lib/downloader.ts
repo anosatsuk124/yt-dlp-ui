@@ -5,6 +5,7 @@ export interface EnqueuePayload {
   url: string;
   format: string;
   container?: string;
+  compat?: string;
   extraArgs?: string[];
   cookiesFile?: string;
 }

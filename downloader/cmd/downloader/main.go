@@ -46,6 +46,7 @@ type Job struct {
 	URL         string   `json:"url"`
 	Format      string   `json:"format"`
 	Container   string   `json:"container,omitempty"`
+	Compat      string   `json:"compat,omitempty"`
 	ExtraArgs   []string `json:"extraArgs,omitempty"`
 	CookiesFile string   `json:"cookiesFile,omitempty"`
 }
@@ -687,6 +688,43 @@ func formatETASeconds(s string) string {
 	return fmt.Sprintf("%d:%02d", m, s2)
 }
 
+// formatSelector returns the `-f …` value for the given quality preset
+// and compatibility profile. "ios" prefers H.264 + AAC packed in MP4 so
+// the file plays cleanly on iOS / Apple UIs (notably the MEGA mobile
+// app, which won't play VP9/Opus/HEVC reliably). The chain falls back
+// to less-restrictive selectors if the source genuinely doesn't have
+// an AVC/AAC track.
+func formatSelector(format, compat string) string {
+	ios := compat == "ios"
+	switch format {
+	case "audio":
+		return "ba/b"
+	case "1080p":
+		if ios {
+			return "bv*[height<=1080][ext=mp4][vcodec^=avc1]+ba[ext=m4a][acodec^=mp4a]/" +
+				"b[height<=1080][ext=mp4][vcodec^=avc1][acodec^=mp4a]/" +
+				"b[height<=1080][ext=mp4]/b[height<=1080]"
+		}
+		return "bv*[height<=1080]+ba/b[height<=1080]"
+	case "720p":
+		if ios {
+			return "bv*[height<=720][ext=mp4][vcodec^=avc1]+ba[ext=m4a][acodec^=mp4a]/" +
+				"b[height<=720][ext=mp4][vcodec^=avc1][acodec^=mp4a]/" +
+				"b[height<=720][ext=mp4]/b[height<=720]"
+		}
+		return "bv*[height<=720]+ba/b[height<=720]"
+	case "best", "":
+		if ios {
+			return "bv*[ext=mp4][vcodec^=avc1]+ba[ext=m4a][acodec^=mp4a]/" +
+				"b[ext=mp4][vcodec^=avc1][acodec^=mp4a]/b[ext=mp4]/b"
+		}
+		return "bv*+ba/b"
+	default:
+		// raw passthrough for forward-compat
+		return format
+	}
+}
+
 // buildArgs constructs the yt-dlp command line for a job.
 func buildArgs(j Job, downloadDir string) []string {
 	args := []string{
@@ -710,32 +748,33 @@ func buildArgs(j Job, downloadDir string) []string {
 	}
 
 	formatLower := strings.ToLower(j.Format)
-	switch formatLower {
-	case "audio":
-		args = append(args, "-f", "ba/b", "-x", "--audio-format", "mp3")
-	case "1080p":
-		args = append(args, "-f", "bv*[height<=1080]+ba/b[height<=1080]")
-	case "720p":
-		args = append(args, "-f", "bv*[height<=720]+ba/b[height<=720]")
-	case "best", "":
-		args = append(args, "-f", "bv*+ba/b")
-	default:
-		// Pass through raw selectors for forward-compat.
-		args = append(args, "-f", j.Format)
-	}
+	compatLower := strings.ToLower(j.Compat)
+	args = append(args, "-f", formatSelector(formatLower, compatLower))
 
 	// Output container preference. "auto" / empty leaves yt-dlp to pick its
 	// natural container (typically mp4 for HLS, may end up webm/mkv for
 	// other sources). Anything else maps to --merge-output-format, which
 	// container-only re-muxes the merged stream — no full re-encode unless
 	// the codec is fundamentally incompatible.
+	//
+	// Compat=ios overrides any container choice — iOS MEGA / Photos UIs
+	// expect an .mp4 wrapper around H.264 + AAC, so we always merge into
+	// mp4 there regardless of the picker setting.
 	if formatLower != "audio" {
-		switch strings.ToLower(j.Container) {
+		container := strings.ToLower(j.Container)
+		if compatLower == "ios" {
+			container = "mp4"
+		}
+		switch container {
 		case "", "auto":
 			// no flag
 		case "mp4", "mkv", "webm", "mov":
-			args = append(args, "--merge-output-format", strings.ToLower(j.Container))
+			args = append(args, "--merge-output-format", container)
 		}
+	}
+	if formatLower == "audio" {
+		// keep existing audio behaviour: extract + transcode to mp3.
+		args = append(args, "-x", "--audio-format", "mp3")
 	}
 
 	if j.CookiesFile != "" {
