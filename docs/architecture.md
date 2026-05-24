@@ -97,7 +97,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   error        TEXT,
   created_at   INTEGER NOT NULL,
   started_at   INTEGER,
-  finished_at  INTEGER
+  finished_at  INTEGER,
+  mega_status      TEXT,
+  mega_uploaded_at INTEGER,
+  mega_error       TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status  ON jobs(status);
@@ -112,6 +115,34 @@ CREATE TABLE IF NOT EXISTS settings (
 `extra_args` is stored as JSON (the shell-split array). `cookies_file` is the
 container-side absolute path that the downloader will pass to `yt-dlp
 --cookies`. Timestamps are Unix-millisecond integers.
+
+`mega_status` (nullable) tracks the optional MEGA upload pipeline: `pending`
+→ `uploading` → `uploaded` (or `failed`). `mega_uploaded_at` is set when the
+upload completes and the local file is deleted. The columns are added by an
+idempotent `ALTER TABLE` migration in `web/src/lib/db.ts` so existing DBs
+pick them up on next start.
+
+## MEGA upload pipeline (optional)
+
+If MEGA credentials are configured in the settings page and the feature is
+enabled, the web service runs a background uploader (`web/src/lib/mega-uploader.ts`)
+that:
+
+1. Subscribes to the same SSE event stream: on every `status: completed`
+   event with a `filePath`, the job row is marked `mega_status='pending'`
+   and the job ID is pushed onto an in-memory FIFO queue.
+2. A single sequential worker drains the queue. The first item triggers a
+   MEGA login (`new Storage({ email, password })`), the destination folder
+   path is walked/created (`mkdir` per segment), and each subsequent queue
+   item reuses that connection until empty.
+3. On success: `mega_status='uploaded'`, `mega_uploaded_at=now`, then the
+   local file at `file_path` is `unlink`ed. On failure: `mega_status='failed'`,
+   `mega_error=<message>`, the local file is **not** touched.
+4. On server start, `mega_status IN ('pending','uploading')` rows are
+   re-enqueued so a crash mid-upload retries on next boot.
+
+No public share link is generated; the History page surfaces the flag with
+no link (users open MEGA to fetch the file).
 
 ## State machine
 

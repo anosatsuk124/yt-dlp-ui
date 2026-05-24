@@ -16,6 +16,9 @@ behind a Tailscale sidecar so every device on your tailnet can use it.
 - Real-time progress (percent / speed / ETA) over WebSocket; reconnects with
   exponential backoff.
 - History page with direct download links to the finished files.
+- Optional MEGA auto-upload: finished files are pushed to your MEGA Cloud
+  Drive, the local copy is deleted, and the History row flips to a "MEGA"
+  badge.
 - Optional Tailscale sidecar: the UI is reachable only inside your tailnet
   (Tailscale Funnel is **explicitly disabled**).
 
@@ -110,6 +113,26 @@ enqueued, the server resolves the URL's hostname to a cookies file by trying
 the exact host first and then walking up to shorter parent domains, so
 `m.youtube.com` will pick up `youtube.com.txt` if no `m.youtube.com.txt`
 exists.
+
+## Optional: MEGA upload
+
+If you'd rather not let `./downloads` grow forever, point yt-dlp-ui at a
+MEGA account and it will push every finished file to the cloud, delete the
+local copy, and flip the History row to a "MEGA" badge.
+
+1. Open `/settings` in the UI.
+2. In the **MEGA upload** card:
+   - Click the toggle to **Enabled**.
+   - Fill in **Email**, **Password**, and **Destination folder** (default
+     `/yt-dlp-ui`, created on first upload if missing).
+   - **Save**.
+3. From now on, every job that reaches `completed` is queued for upload.
+   The History page shows `MEGA queued` → `MEGA…` → `✓ MEGA`. Failures stay
+   on local disk and surface as `MEGA failed` with the error in the tooltip.
+
+Credentials are stored in the SQLite settings table at `${HOST_DATA_DIR}/app.db`
+in plaintext, so treat that file like any other secret. No public share
+link is generated — access the file by logging into MEGA.
 
 ## Storage
 

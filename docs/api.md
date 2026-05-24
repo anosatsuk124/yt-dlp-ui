@@ -180,22 +180,49 @@ DELETE /api/cookies/example.com
 ### `GET /api/settings` — read settings
 
 ```json
-{ "defaultFormat": "best", "maxParallel": 2 }
+{
+  "defaultFormat": "best",
+  "maxParallel": 2,
+  "mega": {
+    "enabled": false,
+    "email": "",
+    "hasPassword": false,
+    "folder": "/yt-dlp-ui"
+  }
+}
 ```
 
 `defaultFormat` is the preset key remembered for the Queue form; `maxParallel`
-is the last value the web service proxied to the downloader.
+is the last value the web service proxied to the downloader. The `mega`
+block reflects optional auto-upload settings — note that the password is
+**never echoed back**; only a `hasPassword` boolean flags whether one is
+stored.
 
 ### `PUT /api/settings` — update settings
 
 ```json
-{ "defaultFormat": "1080p", "maxParallel": 4 }
+{
+  "defaultFormat": "1080p",
+  "maxParallel": 4,
+  "mega": {
+    "enabled": true,
+    "email": "you@example.com",
+    "password": "secret",
+    "folder": "/yt-dlp-ui"
+  }
+}
 ```
 
-Both fields are optional. `maxParallel` must be an integer in `[1, 32]`. When
-set, the new value is persisted in SQLite and `PATCH /config` is forwarded to
-the downloader. A downloader failure returns `502 downloader: <message>`;
-otherwise:
+All top-level fields are optional. `maxParallel` must be an integer in
+`[1, 32]`. When set, the new value is persisted in SQLite and `PATCH /config`
+is forwarded to the downloader.
+
+For `mega`: any subset of `enabled` / `email` / `password` / `folder` may be
+sent. A missing or empty `password` keeps the previously stored value (so
+the UI can re-save other fields without re-typing). The `folder` is forced
+to start with `/`; if blank, it falls back to `/yt-dlp-ui`.
+
+A downloader failure returns `502 downloader: <message>`; otherwise:
 
 ```json
 { "ok": true }
