@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import {
   Table,
@@ -147,33 +148,36 @@ export default function Page() {
                 return (
                   <TableRow key={job.id}>
                     <TableCell className="max-w-0">
-                      <div className="min-w-0">
-                        <a
-                          href={job.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                      <div className="min-w-0 space-y-0.5">
+                        <Link
+                          href={`/history/${encodeURIComponent(job.id)}`}
                           className="block truncate text-primary underline-offset-2 hover:underline"
                           title={job.title ? `${job.title}\n${job.url}` : job.url}
                         >
                           {job.title || job.url}
-                        </a>
-                        {job.title && (
-                          <div
-                            className="truncate text-xs text-muted-foreground"
-                            title={job.url}
+                        </Link>
+                        <div className="flex items-center gap-2 truncate text-xs text-muted-foreground">
+                          {job.title && <span className="truncate">{job.url}</span>}
+                          <a
+                            href={job.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="shrink-0 hover:underline"
+                            title="Open original URL"
                           >
-                            {job.url}
-                          </div>
-                        )}
+                            ↗
+                          </a>
+                        </div>
                       </div>
                     </TableCell>
                     <TableCell>
-                      <span
+                      <Link
+                        href={`/history/${encodeURIComponent(job.id)}`}
                         className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${statusBadgeClass(job.status)}`}
-                        title={job.error ?? undefined}
+                        title={job.error ? `${job.error.slice(0, 200)}${job.error.length > 200 ? "…" : ""}\n\nClick for full log` : "Click for details"}
                       >
                         {job.status}
-                      </span>
+                      </Link>
                     </TableCell>
                     <TableCell className="text-sm">{job.format}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">

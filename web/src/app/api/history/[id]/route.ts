@@ -5,6 +5,12 @@ import { cleanupByIdBracket } from "@/lib/cleanup";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+export async function GET(_req: Request, { params }: { params: { id: string } }) {
+  const job = getJob(params.id);
+  if (!job) return NextResponse.json({ error: "not found" }, { status: 404 });
+  return NextResponse.json(job);
+}
+
 // Removes a finished/failed/canceled job from history. Also unlinks the
 // local file if it still exists. Refuses to touch rows whose MEGA upload
 // already finished — those are 'gone locally on purpose' and shouldn't
