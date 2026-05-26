@@ -786,6 +786,11 @@ func formatSelector(format, compat string) string {
 func buildArgs(j Job, downloadDir string) []string {
 	args := []string{
 		"--newline", "--no-color", "--progress",
+		// yt-dlp's YouTube extractor needs a JavaScript runtime for the EJS
+		// player-response path; the Dockerfile installs nodejs but yt-dlp
+		// only auto-detects deno, so name node explicitly here. Harmless on
+		// extractors that don't use a JS runtime.
+		"--js-runtimes", "node",
 		"--progress-template",
 		// Six space-separated fields after the literal PROGRESS tag:
 		//   down/total  speed  eta  frag_idx/frag_count  status

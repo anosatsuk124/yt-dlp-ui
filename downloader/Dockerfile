@@ -18,7 +18,11 @@ ARG YTDLP_VERSION=2026.03.17
 #                   delegates HLS to ffmpeg, which refetches segments with
 #                   plain curl-equivalents and loses the auth/session token
 #                   (observed as ffmpeg exit 183 / HTTP 403 on AbemaTV).
-RUN apk add --no-cache ffmpeg ca-certificates python3 py3-pip && \
+#   nodejs        — JavaScript runtime for the youtube extractor's EJS path.
+#                   Without one, yt-dlp emits "No supported JavaScript runtime
+#                   could be found" and falls back to the legacy extractor,
+#                   which currently trips YouTube's bot challenge.
+RUN apk add --no-cache ffmpeg ca-certificates python3 py3-pip nodejs && \
     pip install --no-cache-dir --break-system-packages \
         "yt-dlp==${YTDLP_VERSION}" \
         websockets \
