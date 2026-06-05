@@ -173,9 +173,11 @@ until you press **Run**; progress and a live log stream into the same modal.
 Shipped task:
 
 - **Backfill content hashes** — finds completed/uploaded downloads with no
-  recorded sha256. Files still on disk are hashed in place; files already on
-  MEGA are re-downloaded through the normal pipeline (which hashes, renames and
-  re-uploads them), after which the old MEGA copy and DB row are replaced.
+  recorded sha256. Files still on disk are hashed in place. Files already on
+  MEGA are downloaded just long enough to compute the hash, then their MEGA copy
+  is **renamed in place** to embed the `[#hash]` marker (no bytes are
+  re-uploaded). Only files missing from both disk and MEGA are re-downloaded
+  from the source URL.
 
 To add a migration, implement `MaintenanceTask` in `web/src/lib/maintenance/`
 and register it in `registry.ts`; it then appears in the same modal.

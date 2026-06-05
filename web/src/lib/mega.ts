@@ -148,6 +148,52 @@ export class MegaClient {
     return true;
   }
 
+  // Find a file node (not a folder) by name directly under a folder node.
+  // Returns the node or null. Same lookup pattern as deleteByName.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  findFile(folderNode: any, name: string): any | null {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (folderNode.children ?? []).find(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (c: any) => !c.directory && c.name === name,
+    ) ?? null;
+  }
+
+  // Stream a remote file node's content to a local path. Resolves when the
+  // write finishes. `onProgress`, if given, receives (downloaded, total).
+  async downloadFile(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    node: any,
+    destPath: string,
+    onProgress?: (downloaded: number, total: number) => void,
+  ): Promise<void> {
+    if (!this.storage) throw new Error("mega client not connected");
+    const total = typeof node.size === "number" ? node.size : 0;
+    await new Promise<void>((resolve, reject) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const dl: any = node.download({ maxConnections: 4 });
+      const out = fs.createWriteStream(destPath);
+      if (onProgress) {
+        dl.on("progress", (e: { bytesLoaded?: number; bytesTotal?: number }) => {
+          onProgress(e.bytesLoaded ?? 0, e.bytesTotal ?? total);
+        });
+      }
+      dl.on("error", reject);
+      out.on("error", reject);
+      out.on("finish", () => resolve());
+      dl.pipe(out);
+    });
+  }
+
+  // Rename a remote node in place — updates the name attribute only, no bytes
+  // are re-uploaded. Used to embed the content hash into an already-uploaded
+  // file's name without re-transferring it.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async renameFile(node: any, newName: string): Promise<void> {
+    if (!this.storage) throw new Error("mega client not connected");
+    await node.rename(newName);
+  }
+
   async disconnect(): Promise<void> {
     if (!this.storage) return;
     try {

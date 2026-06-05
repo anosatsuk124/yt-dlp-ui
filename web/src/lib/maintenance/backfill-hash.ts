@@ -22,7 +22,7 @@ import { sha256File, insertHashIntoName, SHORT_HASH_LEN } from "../hash";
 import { resolveActualFile } from "../cleanup";
 import { formatKind } from "../formats";
 import { loadMegaConfig } from "../mega";
-import { deleteRemoteForJob, enqueueMegaUpload } from "../mega-uploader";
+import { deleteRemoteForJob, enqueueMegaUpload, rehashRemoteForJob } from "../mega-uploader";
 import { resolveCookiesFile } from "../cookies";
 import { resolveAuthBinding } from "../auth";
 import { postJob } from "../downloader";
@@ -164,21 +164,26 @@ export const backfillHashTask: MaintenanceTask = {
   title: "Backfill content hashes",
   description:
     "Compute and record the sha256 of every completed/uploaded download that " +
-    "has none yet. Files still on disk are hashed in place; files already on " +
-    "MEGA are re-downloaded, re-hashed and their MEGA copy is replaced.",
+    "has none yet. Files still on disk are hashed in place. Files already on " +
+    "MEGA are downloaded just to hash, then their MEGA copy is renamed in place " +
+    "to embed the hash (no re-upload). Only files missing from both disk and " +
+    "MEGA are re-downloaded from the source URL.",
 
   async plan(): Promise<OperationStep[]> {
     const jobs = listJobsMissingHash();
+    const megaEnabled = loadMegaConfig().enabled;
     return jobs.map(j => {
       const onDisk = localFile(j);
-      const needsUpload = loadMegaConfig().enabled && j.mega_status !== "uploaded";
-      return {
-        id: j.id,
-        jobId: j.id,
-        description: onDisk
-          ? `Hash local file for ${shortLabel(j)}, record sha256${needsUpload ? ", and upload to MEGA" : ""}`
-          : `Re-download ${shortLabel(j)}, hash it, replace the MEGA copy, update DB`,
-      };
+      const needsUpload = megaEnabled && j.mega_status !== "uploaded";
+      let description: string;
+      if (onDisk) {
+        description = `Hash local file for ${shortLabel(j)}, record sha256${needsUpload ? ", and upload to MEGA" : ""}`;
+      } else if (megaEnabled && j.mega_status === "uploaded") {
+        description = `Download ${shortLabel(j)} from MEGA, hash it, rename the MEGA copy to [#hash], update DB (re-download from source only if it's gone from MEGA)`;
+      } else {
+        description = `Re-download ${shortLabel(j)} from source, hash it, replace the MEGA copy, update DB`;
+      }
+      return { id: j.id, jobId: j.id, description };
     });
   },
 
@@ -196,8 +201,14 @@ export const backfillHashTask: MaintenanceTask = {
     const onDisk = localFile(job);
     if (onDisk) {
       await rehashLocal(job, onDisk, log);
-    } else {
-      await rehashUploaded(job, log);
+      return;
     }
+    // No local file: prefer the MEGA copy (download just to hash, then rename
+    // the remote in place — no re-upload, no source hit). Only fall back to a
+    // source re-download if it's gone from MEGA too.
+    const remote = await rehashRemoteForJob(job, log);
+    if (remote === "done") return;
+    log(`MEGA copy unavailable (${remote}); re-downloading from source…`);
+    await rehashUploaded(job, log);
   },
 };

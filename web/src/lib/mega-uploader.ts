@@ -20,11 +20,14 @@ import {
   markMegaUploaded,
   markMegaUploading,
   setMegaRemoteName,
+  updateJobHash,
   updateMegaProgress,
   type JobRow,
 } from "./db";
 import { MegaClient, loadMegaConfig } from "./mega";
+import { sha256File, insertHashIntoName, SHORT_HASH_LEN } from "./hash";
 import { formatKind } from "./formats";
+import { DOWNLOAD_DIR } from "./env";
 
 // Pick the MEGA destination path for a job by its format kind: audio-only
 // downloads land in the configured audio subfolder, everything else in the
@@ -255,6 +258,56 @@ export async function deleteRemoteForJob(job: JobRow): Promise<boolean> {
     const folder = await client.ensureFolder(targetFolderPath(job));
     return await client.deleteByName(folder, name);
   } finally {
+    try { await client.disconnect(); } catch { /* ignore */ }
+  }
+}
+
+// Backfill a job's content hash from its MEGA copy, WITHOUT re-downloading from
+// the source URL: stream the remote file down to a temp path purely to compute
+// its sha256, then rename the remote node in place to embed the [#hash] marker
+// (no bytes are re-uploaded) and record the hash in the DB.
+//
+// Returns:
+//   "disabled"  — MEGA off, or this row was never uploaded → caller falls back.
+//   "not-found" — no matching remote node (gone from MEGA) → caller falls back.
+//   "done"      — hashed + renamed + DB updated.
+export async function rehashRemoteForJob(
+  job: JobRow,
+  log: (m: string) => void,
+): Promise<"done" | "not-found" | "disabled"> {
+  const cfg = loadMegaConfig();
+  if (!cfg.enabled || job.mega_status !== "uploaded") return "disabled";
+  const remoteName = job.mega_remote_name || (job.file_path ? path.basename(job.file_path) : "");
+  if (!remoteName) return "not-found";
+
+  const client = new MegaClient();
+  const tmpDir = path.join(DOWNLOAD_DIR, ".rehash");
+  const tmp = path.join(tmpDir, `${job.id}-${remoteName}`);
+  try {
+    await client.connect(cfg.email, cfg.password);
+    const folder = await client.ensureFolder(targetFolderPath(job));
+    const node = client.findFile(folder, remoteName);
+    if (!node) return "not-found";
+
+    fs.mkdirSync(tmpDir, { recursive: true });
+    log(`Downloading from MEGA to hash: ${remoteName}`);
+    await client.downloadFile(node, tmp);
+    const hash = await sha256File(tmp);
+    const h8 = hash.slice(0, SHORT_HASH_LEN);
+
+    // Embed the hash into the remote name (and the DB path record). Derive the
+    // new name from the existing file_path so the directory part is preserved.
+    const newLocal = insertHashIntoName(job.file_path || remoteName, h8);
+    const newName = path.basename(newLocal);
+    if (newName !== remoteName) {
+      await client.renameFile(node, newName);
+    }
+    updateJobHash(job.id, hash, newLocal);
+    setMegaRemoteName(job.id, newName);
+    log(`Rehashed from MEGA: ${remoteName} -> ${newName} (${h8})`);
+    return "done";
+  } finally {
+    try { fs.unlinkSync(tmp); } catch { /* temp may not exist */ }
     try { await client.disconnect(); } catch { /* ignore */ }
   }
 }
