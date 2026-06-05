@@ -7,18 +7,21 @@ import { parse } from "node:url";
 import next from "next";
 import { WebSocketServer } from "ws";
 
+import fs from "node:fs";
 import { register, broadcast } from "./src/lib/ws-hub";
 import {
   listActiveJobs,
   updateJobStatus,
   updateJobProgress,
   updateJobTitle,
+  updateJobHash,
   markMegaPending,
   reconcileOrphans,
 } from "./src/lib/db";
 import { DOWNLOADER_URL } from "./src/lib/env";
 import { getJobs as getDownloaderJobs } from "./src/lib/downloader";
-import { cleanupByIdBracket } from "./src/lib/cleanup";
+import { cleanupFragments } from "./src/lib/cleanup";
+import { sha256File, insertHashIntoName, SHORT_HASH_LEN } from "./src/lib/hash";
 import { loadMegaConfig } from "./src/lib/mega";
 import { enqueueMegaUpload, startMegaUploader } from "./src/lib/mega-uploader";
 
@@ -72,19 +75,16 @@ function applyEvent(event: DownloaderEvent) {
     } catch (e) { console.error("db status update failed:", e); }
     lastProgressWrite.delete(event.id);
     if (event.status === "completed" && event.filePath) {
-      try {
-        if (loadMegaConfig().enabled) {
-          markMegaPending(event.id);
-          enqueueMegaUpload(event.id);
-        }
-      } catch (e) { console.error("mega enqueue failed:", e); }
+      // Hash + rename + MEGA enqueue happens off the event-processing path so
+      // a large file's sha256 doesn't stall progress events for other jobs.
+      void finalizeCompleted(event.id, event.filePath);
     }
-    // Sweep leftover .part / .ytdl / fragment files for any job that did
-    // not finish cleanly. The destination path captured by the downloader
-    // gives us the [id] bracket to match against.
+    // Sweep leftover .part / .ytdl / fragment files for any job that did not
+    // finish cleanly. Scoped to the job's own <format>/<container> subdir so a
+    // sibling format's finished file (same source [id]) is never touched.
     if ((event.status === "failed" || event.status === "canceled") && event.filePath) {
       try {
-        const n = cleanupByIdBracket(event.filePath);
+        const n = cleanupFragments(event.filePath);
         if (n > 0) console.log(`[cleanup] ${event.status} job ${event.id}: removed ${n} partial file(s)`);
       } catch (e) { console.error("partial cleanup failed:", e); }
     }
@@ -93,6 +93,38 @@ function applyEvent(event: DownloaderEvent) {
       updateJobTitle(event.id, event.title);
     } catch { /* job may not exist yet locally */ }
   }
+}
+
+// Compute the sha256 of a finished file, rename it to embed a short hash
+// marker, record the hash in the DB, then (if MEGA is enabled) enqueue the
+// upload — strictly in that order so the uploader picks up the renamed path.
+async function finalizeCompleted(id: string, filePath: string): Promise<void> {
+  let finalPath = filePath;
+  try {
+    if (fs.existsSync(filePath)) {
+      const hash = await sha256File(filePath);
+      const renamed = insertHashIntoName(filePath, hash.slice(0, SHORT_HASH_LEN));
+      if (renamed !== filePath) {
+        if (fs.existsSync(renamed)) {
+          // Identical content already present (idempotent re-download): drop
+          // the freshly downloaded duplicate, keep the canonical hashed file.
+          try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+        } else {
+          fs.renameSync(filePath, renamed);
+        }
+        finalPath = renamed;
+      }
+      updateJobHash(id, hash, finalPath);
+    }
+  } catch (e) {
+    console.error(`[hash] finalize failed for ${id}:`, (e as Error).message);
+  }
+  try {
+    if (loadMegaConfig().enabled) {
+      markMegaPending(id);
+      enqueueMegaUpload(id);
+    }
+  } catch (e) { console.error("mega enqueue failed:", e); }
 }
 
 async function reconcileNow(reason: string) {
@@ -110,9 +142,10 @@ async function reconcileNow(reason: string) {
     if (paths.length > 0) {
       console.log(`[reconcile/${reason}] marked ${paths.length} stale job(s) as failed`);
       // Each orphaned row may have left a half-written file and a swarm of
-      // .part-Frag<N>.part fragments behind. Sweep them by [id] bracket.
+      // .part-Frag<N>.part fragments behind. Sweep them within each job's
+      // own <format>/<container> subdir.
       let total = 0;
-      for (const p of paths) total += cleanupByIdBracket(p);
+      for (const p of paths) total += cleanupFragments(p);
       if (total > 0) console.log(`[reconcile/${reason}] removed ${total} partial file(s)`);
     }
   } catch (e) {

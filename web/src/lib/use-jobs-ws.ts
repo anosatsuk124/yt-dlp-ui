@@ -139,6 +139,9 @@ export function useJobsWs(): { connected: boolean; jobs: JobRow[] } {
                 mega_speed: null,
                 container: null,
                 compat: null,
+                content_hash: null,
+                save_as: null,
+                mega_remote_name: null,
               });
             }
             flush();

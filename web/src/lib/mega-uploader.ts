@@ -9,6 +9,7 @@
 // step on each other.
 
 import fs from "node:fs";
+import path from "node:path";
 import {
   getJob,
   getSetting,
@@ -18,9 +19,20 @@ import {
   markMegaPending,
   markMegaUploaded,
   markMegaUploading,
+  setMegaRemoteName,
   updateMegaProgress,
+  type JobRow,
 } from "./db";
 import { MegaClient, loadMegaConfig } from "./mega";
+import { formatKind } from "./formats";
+
+// Pick the MEGA destination path for a job by its format kind: audio-only
+// downloads land in the configured audio subfolder, everything else in the
+// main folder.
+function targetFolderPath(job: JobRow): string {
+  const cfg = loadMegaConfig();
+  return formatKind(job.format) === "audio" ? cfg.audioFolder : cfg.folder;
+}
 
 // Next.js's App Router and the custom server.ts load lib modules through
 // separate module graphs in some configurations, so plain module-scoped
@@ -122,14 +134,14 @@ async function workerLoop(workerId: number): Promise<void> {
       const client = new MegaClient();
       try {
         await client.connect(cfg.email, cfg.password);
-        const folder = await client.ensureFolder(cfg.folder);
-        // Drain as many items as we can with this connection.
+        // Drain as many items as we can with this connection. The destination
+        // folder (video vs audio subdir) is resolved per job inside processOne.
         while (queue.length > 0) {
           if (getActiveWorkers() > getMaxParallel()) break;
           const id = queue.shift();
           if (!id) break;
           queued.delete(id);
-          await processOne(id, client, folder, workerId);
+          await processOne(id, client, workerId);
         }
       } catch (e) {
         // Connect / ensureFolder failures only. processOne owns its own
@@ -146,8 +158,7 @@ async function workerLoop(workerId: number): Promise<void> {
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function processOne(jobId: string, client: MegaClient, folder: any, workerId: number): Promise<void> {
+async function processOne(jobId: string, client: MegaClient, workerId: number): Promise<void> {
   const job = getJob(jobId);
   if (!job || !job.file_path) {
     console.log(`[mega/w${workerId}] skipping ${jobId}: job or file_path missing`);
@@ -163,6 +174,8 @@ async function processOne(jobId: string, client: MegaClient, folder: any, worker
     return;
   }
 
+  const folder = await client.ensureFolder(targetFolderPath(job));
+  const remoteName = path.basename(job.file_path);
   const controller = new AbortController();
   activeUploads.set(jobId, controller);
   try {
@@ -191,6 +204,7 @@ async function processOne(jobId: string, client: MegaClient, folder: any, worker
       },
       controller.signal,
     );
+    setMegaRemoteName(jobId, remoteName);
     markMegaUploaded(jobId, Date.now());
     try {
       await fs.promises.unlink(job.file_path);
@@ -226,6 +240,25 @@ export function notifyMaxParallelChanged(): void {
 // picked it up, "not-found" otherwise. The DB row is left at
 // mega_status='canceled' so the standard recovery / auto-pickup paths
 // don't immediately re-enqueue it — the user has to explicitly retry.
+// Delete a job's already-uploaded file from MEGA (overwrite / maintenance
+// resolution). Opens its own short-lived session. Returns true if a remote
+// node was deleted. Best-effort: connection/lookup failures throw so the
+// caller can decide whether to proceed with a replacing upload.
+export async function deleteRemoteForJob(job: JobRow): Promise<boolean> {
+  const cfg = loadMegaConfig();
+  if (!cfg.enabled) return false;
+  const name = job.mega_remote_name || (job.file_path ? job.file_path.split("/").pop() ?? "" : "");
+  if (!name) return false;
+  const client = new MegaClient();
+  try {
+    await client.connect(cfg.email, cfg.password);
+    const folder = await client.ensureFolder(targetFolderPath(job));
+    return await client.deleteByName(folder, name);
+  } finally {
+    try { await client.disconnect(); } catch { /* ignore */ }
+  }
+}
+
 export function cancelMegaUpload(jobId: string): "uploading" | "queued" | "not-found" {
   const ctrl = activeUploads.get(jobId);
   if (ctrl) {
