@@ -20,7 +20,7 @@ import {
 } from "./src/lib/db";
 import { DOWNLOADER_URL } from "./src/lib/env";
 import { getJobs as getDownloaderJobs } from "./src/lib/downloader";
-import { cleanupFragments } from "./src/lib/cleanup";
+import { cleanupFragments, resolveActualFile } from "./src/lib/cleanup";
 import { sha256File, insertHashIntoName, SHORT_HASH_LEN } from "./src/lib/hash";
 import { loadMegaConfig } from "./src/lib/mega";
 import { enqueueMegaUpload, startMegaUploader } from "./src/lib/mega-uploader";
@@ -99,22 +99,27 @@ function applyEvent(event: DownloaderEvent) {
 // marker, record the hash in the DB, then (if MEGA is enabled) enqueue the
 // upload — strictly in that order so the uploader picks up the renamed path.
 async function finalizeCompleted(id: string, filePath: string): Promise<void> {
-  let finalPath = filePath;
+  // The captured path may carry the source extension if a post-processing
+  // step changed it (audio extraction, remux). Resolve the real file first.
+  const actual = resolveActualFile(filePath) ?? filePath;
+  let finalPath = actual;
   try {
-    if (fs.existsSync(filePath)) {
-      const hash = await sha256File(filePath);
-      const renamed = insertHashIntoName(filePath, hash.slice(0, SHORT_HASH_LEN));
-      if (renamed !== filePath) {
+    if (fs.existsSync(actual)) {
+      const hash = await sha256File(actual);
+      const renamed = insertHashIntoName(actual, hash.slice(0, SHORT_HASH_LEN));
+      if (renamed !== actual) {
         if (fs.existsSync(renamed)) {
           // Identical content already present (idempotent re-download): drop
           // the freshly downloaded duplicate, keep the canonical hashed file.
-          try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+          try { fs.unlinkSync(actual); } catch { /* ignore */ }
         } else {
-          fs.renameSync(filePath, renamed);
+          fs.renameSync(actual, renamed);
         }
         finalPath = renamed;
       }
       updateJobHash(id, hash, finalPath);
+    } else {
+      console.error(`[hash] no file found to finalize for ${id}: ${filePath}`);
     }
   } catch (e) {
     console.error(`[hash] finalize failed for ${id}:`, (e as Error).message);

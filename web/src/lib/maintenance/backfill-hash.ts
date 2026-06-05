@@ -14,21 +14,25 @@ import {
   deleteJob,
   updateJobHash,
   updateJobStatus,
+  markMegaPending,
   listJobsMissingHash,
   type JobRow,
 } from "../db";
 import { sha256File, insertHashIntoName, SHORT_HASH_LEN } from "../hash";
+import { resolveActualFile } from "../cleanup";
 import { formatKind } from "../formats";
 import { loadMegaConfig } from "../mega";
-import { deleteRemoteForJob } from "../mega-uploader";
+import { deleteRemoteForJob, enqueueMegaUpload } from "../mega-uploader";
 import { resolveCookiesFile } from "../cookies";
 import { resolveAuthBinding } from "../auth";
 import { postJob } from "../downloader";
 import { hasAny } from "../auth";
 import type { MaintenanceTask, OperationStep } from "./types";
 
-function localExists(job: JobRow): boolean {
-  return !!job.file_path && fs.existsSync(job.file_path);
+// The real on-disk file for a job, resolving a wrong-extension capture
+// (audio extraction / remux) to the actual output. null if it's gone.
+function localFile(job: JobRow): string | null {
+  return resolveActualFile(job.file_path);
 }
 
 function shortLabel(job: JobRow): string {
@@ -113,19 +117,29 @@ async function waitReady(newId: string, timeoutMs: number): Promise<void> {
   throw new Error("timed out waiting for re-download to finish");
 }
 
-async function rehashLocal(job: JobRow, log: (m: string) => void): Promise<void> {
-  if (!job.file_path) throw new Error("no file_path");
-  const hash = await sha256File(job.file_path);
-  const renamed = insertHashIntoName(job.file_path, hash.slice(0, SHORT_HASH_LEN));
-  let finalPath = job.file_path;
-  if (renamed !== job.file_path && !fs.existsSync(renamed)) {
-    fs.renameSync(job.file_path, renamed);
+// Hash an on-disk file in place, embed the hash marker, and fix the DB row's
+// path + hash. Then (if MEGA is on and this row was never uploaded) enqueue the
+// upload — this is what recovers rows whose earlier upload failed because the
+// captured path had the wrong extension.
+async function rehashLocal(job: JobRow, filePath: string, log: (m: string) => void): Promise<void> {
+  const hash = await sha256File(filePath);
+  const renamed = insertHashIntoName(filePath, hash.slice(0, SHORT_HASH_LEN));
+  let finalPath = filePath;
+  if (renamed !== filePath && !fs.existsSync(renamed)) {
+    fs.renameSync(filePath, renamed);
     finalPath = renamed;
   } else if (fs.existsSync(renamed)) {
     finalPath = renamed;
   }
   updateJobHash(job.id, hash, finalPath);
-  log(`Hashed local file for ${job.id}: ${hash.slice(0, SHORT_HASH_LEN)}`);
+  log(`Hashed local file for ${job.id}: ${hash.slice(0, SHORT_HASH_LEN)} (${finalPath})`);
+
+  const cfg = loadMegaConfig();
+  if (cfg.enabled && job.mega_status !== "uploaded") {
+    markMegaPending(job.id);
+    enqueueMegaUpload(job.id);
+    log(`Enqueued MEGA upload for ${job.id}`);
+  }
 }
 
 async function rehashUploaded(job: JobRow, log: (m: string) => void): Promise<void> {
@@ -155,13 +169,17 @@ export const backfillHashTask: MaintenanceTask = {
 
   async plan(): Promise<OperationStep[]> {
     const jobs = listJobsMissingHash();
-    return jobs.map(j => ({
-      id: j.id,
-      jobId: j.id,
-      description: localExists(j)
-        ? `Hash existing local file for ${shortLabel(j)} and record sha256`
-        : `Re-download ${shortLabel(j)}, hash it, replace the MEGA copy, update DB`,
-    }));
+    return jobs.map(j => {
+      const onDisk = localFile(j);
+      const needsUpload = loadMegaConfig().enabled && j.mega_status !== "uploaded";
+      return {
+        id: j.id,
+        jobId: j.id,
+        description: onDisk
+          ? `Hash local file for ${shortLabel(j)}, record sha256${needsUpload ? ", and upload to MEGA" : ""}`
+          : `Re-download ${shortLabel(j)}, hash it, replace the MEGA copy, update DB`,
+      };
+    });
   },
 
   async apply(step: OperationStep, log: (m: string) => void): Promise<void> {
@@ -175,8 +193,9 @@ export const backfillHashTask: MaintenanceTask = {
       log(`Skipping ${step.jobId}: already hashed`);
       return;
     }
-    if (localExists(job)) {
-      await rehashLocal(job, log);
+    const onDisk = localFile(job);
+    if (onDisk) {
+      await rehashLocal(job, onDisk, log);
     } else {
       await rehashUploaded(job, log);
     }

@@ -603,6 +603,17 @@ func (p *Pool) handleStdoutLine(id, line string, errBuf *rollingBuf, filePath *a
 		return
 	}
 
+	// Authoritative final path, emitted after post-processing + move. Fires
+	// later than DEST_PROBE, so it correctly overrides the source-extension
+	// path for audio extraction and remux.
+	if strings.HasPrefix(line, "FINAL_PROBE:") {
+		fp := strings.TrimSpace(strings.TrimPrefix(line, "FINAL_PROBE:"))
+		if fp != "" && fp != "NA" {
+			filePath.Store(fp)
+		}
+		return
+	}
+
 	// PROGRESS <down>/<total> <speed_bps> <eta_sec> <frag_idx>/<frag_count> <status>
 	if strings.HasPrefix(line, "PROGRESS ") {
 		fields := strings.Fields(line)
@@ -840,8 +851,17 @@ func buildArgs(j Job, downloadDir string) []string {
 		// Same idea for the output path. The new yt-dlp + --progress-template
 		// combo suppresses the standard `[download] Destination: …` line,
 		// which is how we used to capture the filename for cleanup-on-
-		// cancel. Probe it explicitly here instead.
+		// cancel. Probe it explicitly here instead. This is the SOURCE path
+		// (pre-postprocessing) so for audio extraction / remux it has the
+		// wrong extension — used only as an early hint / cleanup fallback.
 		"--print", "before_dl:DEST_PROBE:%(filename)s",
+		// The authoritative final path, emitted AFTER all post-processing and
+		// the move to the destination. %(filepath)s reflects the real
+		// extension (e.g. .mp3/.flac for -x, the merged .mp4 for a remux), so
+		// this is what the web side hashes and uploads. yt-dlp does not print
+		// `[ExtractAudio] Destination:` to stdout under --print, so without
+		// this the captured path would keep the source container's extension.
+		"--print", "after_move:FINAL_PROBE:%(filepath)s",
 	}
 
 	formatLower := strings.ToLower(j.Format)

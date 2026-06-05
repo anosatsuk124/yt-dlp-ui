@@ -68,6 +68,43 @@ export function cleanupFragments(filePath: string | null | undefined): number {
   return n;
 }
 
+// Resolve the path a job's file actually lives at. The downloader's captured
+// path can have the wrong extension if a post-processing step (audio
+// extraction, remux) ran and yt-dlp didn't surface the final path — so if the
+// probed path is missing, look in its directory for the real (non-fragment)
+// output that shares the same source `[id]` bracket, newest first.
+export function resolveActualFile(probedPath: string | null | undefined): string | null {
+  if (!probedPath) return null;
+  if (fs.existsSync(probedPath)) return probedPath;
+
+  const dir = path.dirname(probedPath);
+  const base = path.basename(probedPath);
+  const id = extractIdBracket(base);
+  const stem = base.replace(/\.[^.]+$/, "");
+
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return null;
+  }
+
+  let best: { full: string; mtime: number } | null = null;
+  for (const name of entries) {
+    if (isFragmentName(name)) continue;
+    const matches = id ? name.includes(id) : name.startsWith(stem);
+    if (!matches) continue;
+    const full = path.join(dir, name);
+    try {
+      const m = fs.statSync(full).mtimeMs;
+      if (!best || m > best.mtime) best = { full, mtime: m };
+    } catch {
+      // ignore — entry vanished between readdir and stat.
+    }
+  }
+  return best ? best.full : null;
+}
+
 // Delete a *finished* download's file, but only after verifying it really is
 // the file we think it is. Guards against deleting the wrong content when the
 // same URL/format/container was re-downloaded with different bytes.
