@@ -17,9 +17,10 @@ import {
   updateJobHash,
   markMegaPending,
   reconcileOrphans,
+  getSetting,
 } from "./src/lib/db";
 import { DOWNLOADER_URL } from "./src/lib/env";
-import { getJobs as getDownloaderJobs } from "./src/lib/downloader";
+import { getJobs as getDownloaderJobs, patchConfig } from "./src/lib/downloader";
 import { cleanupFragments, resolveActualFile } from "./src/lib/cleanup";
 import { sha256File, insertHashIntoName, SHORT_HASH_LEN } from "./src/lib/hash";
 import { loadMegaConfig } from "./src/lib/mega";
@@ -132,6 +133,25 @@ async function finalizeCompleted(id: string, filePath: string): Promise<void> {
   } catch (e) { console.error("mega enqueue failed:", e); }
 }
 
+// Re-assert the persisted max_parallel onto the downloader. The downloader
+// starts from its DOWNLOADER_MAX_PARALLEL env default and only learns the
+// user's saved value via PATCH /config — which previously happened only when
+// the settings form was saved. So after any downloader (re)start the env
+// default was in force and the UI value was silently ignored. Push it on every
+// SSE (re)connect so the DB setting is authoritative across restarts.
+async function syncDownloaderConfig(reason: string) {
+  const raw = getSetting("max_parallel");
+  if (!raw) return; // never configured → leave the env default in place
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return;
+  try {
+    await patchConfig(n);
+    console.log(`[config/${reason}] set downloader maxParallel=${n}`);
+  } catch (e) {
+    console.log(`[config/${reason}] failed to set maxParallel:`, (e as Error).message);
+  }
+}
+
 async function reconcileNow(reason: string) {
   const alive = new Set<string>();
   try {
@@ -171,6 +191,9 @@ async function consumeEvents(signal: AbortSignal) {
       // was just restarted, any DB rows still tagged 'queued'/'running' that
       // it doesn't know about get marked 'failed'.
       await reconcileNow("sse-connect");
+      // Re-assert the saved parallelism — the downloader may have just
+      // restarted back to its env default.
+      await syncDownloaderConfig("sse-connect");
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";

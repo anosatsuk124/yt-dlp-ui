@@ -357,6 +357,13 @@ func (p *Pool) resize(n int) {
 	if n < 1 {
 		n = 1
 	}
+	// No-op if unchanged. Restarting the worker set cancels the workersCtx,
+	// which would SIGINT any in-flight job; the web service re-asserts the
+	// saved parallelism on every SSE (re)connect, so without this guard a
+	// plain web reconnect would needlessly kill running downloads.
+	if n == p.maxParallel {
+		return
+	}
 	slog.Info("resizing worker pool", "from", p.maxParallel, "to", n)
 
 	// Stop current workers (does not cancel in-flight jobs themselves; they
