@@ -24,7 +24,7 @@ import { getJobs as getDownloaderJobs, patchConfig } from "./src/lib/downloader"
 import { cleanupFragments, resolveActualFile } from "./src/lib/cleanup";
 import { sha256File, insertHashIntoName, SHORT_HASH_LEN } from "./src/lib/hash";
 import { loadMegaConfig } from "./src/lib/mega";
-import { enqueueMegaUpload, startMegaUploader } from "./src/lib/mega-uploader";
+import { enqueueMegaUpload, startMegaUploader, notifyMaxParallelChanged } from "./src/lib/mega-uploader";
 
 const dev = process.env.NODE_ENV !== "production";
 const port = parseInt(process.env.PORT ?? "3000", 10);
@@ -133,22 +133,41 @@ async function finalizeCompleted(id: string, filePath: string): Promise<void> {
   } catch (e) { console.error("mega enqueue failed:", e); }
 }
 
-// Re-assert the persisted max_parallel onto the downloader. The downloader
-// starts from its DOWNLOADER_MAX_PARALLEL env default and only learns the
-// user's saved value via PATCH /config — which previously happened only when
-// the settings form was saved. So after any downloader (re)start the env
-// default was in force and the UI value was silently ignored. Push it on every
-// SSE (re)connect so the DB setting is authoritative across restarts.
-async function syncDownloaderConfig(reason: string) {
+// Re-assert every setting that has a runtime side effect from the DB, so the
+// saved values are authoritative across web/downloader restarts. Called on each
+// SSE (re)connect.
+//
+// Note on the rest of the settings: all OTHER settings are read straight from
+// the DB on every use, so they need no re-assertion here:
+//   - mega_enabled / email / password / folder / mega_audio_subdir — read via
+//     loadMegaConfig() on every uploader loop and upload.
+//   - default_format / default_container / default_compat — read via getSetting
+//     on each /api/jobs and /api/settings request.
+// The two below are the only ones cached in a worker process and therefore the
+// only ones that can drift after a restart:
+//   - max_parallel lives in the separate Go downloader (its own process, no DB
+//     access) → must be pushed via PATCH /config.
+//   - mega_max_parallel governs how many uploader workers spawn → wake the pool
+//     so it matches the DB value even if it was raised while idle.
+async function syncSettings(reason: string) {
   const raw = getSetting("max_parallel");
-  if (!raw) return; // never configured → leave the env default in place
-  const n = parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 1) return;
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1) {
+      try {
+        await patchConfig(n);
+        console.log(`[config/${reason}] set downloader maxParallel=${n}`);
+      } catch (e) {
+        console.log(`[config/${reason}] failed to set maxParallel:`, (e as Error).message);
+      }
+    }
+  }
+  // Re-assert the MEGA uploader pool size against the DB (no-op if already
+  // sized; spawns workers if the limit was raised and uploads are pending).
   try {
-    await patchConfig(n);
-    console.log(`[config/${reason}] set downloader maxParallel=${n}`);
+    notifyMaxParallelChanged();
   } catch (e) {
-    console.log(`[config/${reason}] failed to set maxParallel:`, (e as Error).message);
+    console.log(`[config/${reason}] mega pool re-assert failed:`, (e as Error).message);
   }
 }
 
@@ -191,9 +210,9 @@ async function consumeEvents(signal: AbortSignal) {
       // was just restarted, any DB rows still tagged 'queued'/'running' that
       // it doesn't know about get marked 'failed'.
       await reconcileNow("sse-connect");
-      // Re-assert the saved parallelism — the downloader may have just
-      // restarted back to its env default.
-      await syncDownloaderConfig("sse-connect");
+      // Re-assert all runtime-applied settings from the DB — the downloader
+      // may have just restarted back to its env defaults.
+      await syncSettings("sse-connect");
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
