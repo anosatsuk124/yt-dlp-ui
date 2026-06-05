@@ -9,6 +9,8 @@ export interface EnqueuePayload {
   compat?: string;
   extraArgs?: string[];
   cookiesFile?: string;
+  // Replaces the %(title)s portion of the output filename (save-as override).
+  outputName?: string;
   // Auth fields are flattened onto the Job struct on the Go side. We send
   // them at the top level (rather than nested under an "auth" key) so the
   // downloader struct stays flat and back-compat: missing fields decode to
