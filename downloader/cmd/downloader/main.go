@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -126,6 +127,10 @@ type Config struct {
 	DownloadDir string
 	CookiesDir  string
 	YTDLPPath   string
+	// Socket, when non-empty (DOWNLOADER_SOCKET), makes the server listen on a
+	// Unix domain socket / Windows named pipe instead of a TCP port. Used by the
+	// Tauri desktop build so no TCP port is ever opened; empty in Docker (TCP).
+	Socket string
 }
 
 func loadConfig() Config {
@@ -135,6 +140,7 @@ func loadConfig() Config {
 		DownloadDir: envOr("DOWNLOAD_DIR", "/downloads"),
 		CookiesDir:  envOr("COOKIES_DIR", "/cookies"),
 		YTDLPPath:   envOr("YTDLP_PATH", "yt-dlp"),
+		Socket:      os.Getenv("DOWNLOADER_SOCKET"),
 	}
 }
 
@@ -1198,24 +1204,20 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 // ----------------------------------------------------------------------------
-// Process signaling (split out so it's easy to keep stdlib-only & portable)
+// Listener
 // ----------------------------------------------------------------------------
 
-func sysProcAttr() *syscall.SysProcAttr {
-	// Use a dedicated process group so we can SIGINT/SIGKILL the entire tree
-	// (yt-dlp + any spawned ffmpeg child).
-	return &syscall.SysProcAttr{Setpgid: true}
-}
-
-func sendSignal(cmd *exec.Cmd, sig syscall.Signal) error {
-	if cmd.Process == nil {
-		return nil
+// listen returns the net.Listener the HTTP server should serve on. When
+// cfg.Socket (DOWNLOADER_SOCKET) is set it is a Unix domain socket on
+// Unix or a named pipe on Windows (desktop/Tauri mode, no TCP port);
+// otherwise it is a TCP port (the Docker default). The socket binding lives
+// in listen_unix.go / listen_windows.go so the TCP path stays
+// dependency-free on every platform.
+func listen(cfg Config) (net.Listener, error) {
+	if cfg.Socket != "" {
+		return listenSocket(cfg.Socket)
 	}
-	// Negative PID targets the process group.
-	if err := syscall.Kill(-cmd.Process.Pid, sig); err == nil {
-		return nil
-	}
-	return cmd.Process.Signal(sig)
+	return net.Listen("tcp", ":"+cfg.Port)
 }
 
 // ----------------------------------------------------------------------------
@@ -1240,9 +1242,14 @@ func main() {
 	srv := &Server{cfg: cfg, registry: reg, bus: bus, pool: pool}
 
 	httpServer := &http.Server{
-		Addr:              ":" + cfg.Port,
 		Handler:           srv.routes(),
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	ln, err := listen(cfg)
+	if err != nil {
+		slog.Error("listen failed", "err", err, "socket", cfg.Socket, "port", cfg.Port)
+		os.Exit(1)
 	}
 
 	// Signal handling.
@@ -1251,8 +1258,8 @@ func main() {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		slog.Info("http listening", "addr", httpServer.Addr)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Info("http listening", "addr", ln.Addr())
+		if err := httpServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 		close(serverErr)
