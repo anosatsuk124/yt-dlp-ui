@@ -7,16 +7,50 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/use-toast";
-import { FORMATS, type FormatKey, isFormatKey } from "@/lib/formats";
-import { CONTAINERS, type ContainerKey, isContainerKey } from "@/lib/containers";
+import { FORMATS, type FormatKey, isFormatKey, normalizeFormatKey, formatKind } from "@/lib/formats";
+import {
+  CONTAINER_LABELS,
+  containersFor,
+  isContainerKey,
+  type ContainerKey,
+} from "@/lib/containers";
 import { COMPATS, type CompatKey, isCompatKey } from "@/lib/compat";
 import { statusBadgeClass } from "@/lib/format";
 import { useJobsWs } from "@/lib/use-jobs-ws";
 
 const FORMAT_KEYS = Object.keys(FORMATS) as FormatKey[];
-const CONTAINER_KEYS = Object.keys(CONTAINERS) as ContainerKey[];
 const COMPAT_KEYS = Object.keys(COMPATS) as CompatKey[];
+
+type Selections = Record<FormatKey, Set<ContainerKey>>;
+type Resolution = "append" | "overwrite" | "save-as" | "cancel";
+
+interface Conflict {
+  url: string;
+  format: FormatKey;
+  container: ContainerKey;
+  existingId: string;
+  title: string;
+}
+
+function emptySelections(): Selections {
+  return FORMAT_KEYS.reduce((acc, k) => {
+    acc[k] = new Set<ContainerKey>();
+    return acc;
+  }, {} as Selections);
+}
+
+function comboKey(url: string, format: string, container: string): string {
+  return `${url}|${format}|${container}`;
+}
 
 type AuthField =
   | "username" | "password" | "twoFactor" | "videoPassword"
@@ -38,23 +72,38 @@ export default function Page() {
   const { toast } = useToast();
 
   const [urls, setUrls] = useState("");
-  const [format, setFormat] = useState<FormatKey>("best");
-  const [container, setContainer] = useState<ContainerKey>("auto");
+  const [selections, setSelections] = useState<Selections>(emptySelections);
   const [compat, setCompat] = useState<CompatKey>("auto");
   const [extraArgs, setExtraArgs] = useState("");
   const [auth, setAuth] = useState<AuthForm>(EMPTY_AUTH);
   const [certs, setCerts] = useState<CertEntry[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
-  // Seed the presets from saved settings on mount.
+  // Conflict-resolution modal state.
+  const [conflicts, setConflicts] = useState<Conflict[] | null>(null);
+  const [resolution, setResolution] = useState<Resolution>("append");
+  const [saveAsNames, setSaveAsNames] = useState<Record<string, string>>({});
+
+  // Seed selections/compat from saved settings on mount.
   useEffect(() => {
     let canceled = false;
     fetch("/api/settings")
       .then(r => r.json())
       .then((s: { defaultFormat?: string; defaultContainer?: string; defaultCompat?: string }) => {
         if (canceled) return;
-        if (s.defaultFormat && isFormatKey(s.defaultFormat)) setFormat(s.defaultFormat);
-        if (s.defaultContainer && isContainerKey(s.defaultContainer)) setContainer(s.defaultContainer);
+        const fmt = s.defaultFormat ? normalizeFormatKey(s.defaultFormat) : "best";
+        const kind = formatKind(fmt);
+        const allowed = containersFor(kind);
+        const cont = s.defaultContainer && isContainerKey(s.defaultContainer) && allowed.includes(s.defaultContainer)
+          ? s.defaultContainer
+          : allowed[0];
+        setSelections(prev => {
+          const next = emptySelections();
+          // preserve any user toggles that happened before settings arrived
+          for (const k of FORMAT_KEYS) next[k] = new Set(prev[k]);
+          next[fmt].add(cont);
+          return next;
+        });
         if (s.defaultCompat && isCompatKey(s.defaultCompat)) setCompat(s.defaultCompat);
       })
       .catch(() => { /* leave default */ });
@@ -68,8 +117,73 @@ export default function Page() {
     return () => { canceled = true; };
   }, []);
 
+  function toggleContainer(format: FormatKey, container: ContainerKey) {
+    setSelections(prev => {
+      const next: Selections = { ...prev };
+      const set = new Set(prev[format]);
+      if (set.has(container)) set.delete(container);
+      else set.add(container);
+      next[format] = set;
+      return next;
+    });
+  }
+
+  function buildSelectionsPayload(): { format: FormatKey; containers: ContainerKey[] }[] {
+    return FORMAT_KEYS
+      .map(format => ({ format, containers: Array.from(selections[format]) }))
+      .filter(s => s.containers.length > 0);
+  }
+
   function setAuthField<K extends AuthField>(k: K, v: string) {
     setAuth(a => ({ ...a, [k]: v }));
+  }
+
+  // Core POST. `res` is the conflict resolution (undefined on the first try).
+  async function postJobs(
+    list: string[],
+    sels: { format: FormatKey; containers: ContainerKey[] }[],
+    res?: Resolution,
+    names?: Record<string, string>,
+  ): Promise<"ok" | "conflict" | "error"> {
+    const authPayload: Partial<AuthForm> = {};
+    for (const k of Object.keys(auth) as AuthField[]) {
+      const v = auth[k].trim();
+      if (v !== "") authPayload[k] = v;
+    }
+    try {
+      const r = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          urls: list,
+          selections: sels,
+          compat,
+          extraArgs: extraArgs.trim() || undefined,
+          auth: Object.keys(authPayload).length ? authPayload : undefined,
+          resolution: res,
+          saveAsNames: names,
+        }),
+      });
+      if (r.status === 409) {
+        const data = await r.json().catch(() => ({}));
+        setConflicts((data.conflicts ?? []) as Conflict[]);
+        setResolution("append");
+        setSaveAsNames({});
+        return "conflict";
+      }
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data?.error ?? `HTTP ${r.status}`);
+      const n = data.jobs?.length ?? 0;
+      const skipped = data.skipped?.length ?? 0;
+      toast({
+        title: "Enqueued",
+        description: `${n} job(s) queued${skipped ? `, ${skipped} skipped` : ""}.`,
+      });
+      return "ok";
+    } catch (err) {
+      toast({ title: "Failed to enqueue", description: (err as Error).message });
+      return "error";
+    }
   }
 
   async function onSubmit(e: React.FormEvent) {
@@ -79,38 +193,36 @@ export default function Page() {
       toast({ title: "No URLs", description: "Paste at least one URL." });
       return;
     }
-    // Strip empty auth fields so the request body stays small and the
-    // server's "empty = leave alone" semantics work for per-job overrides.
-    const authPayload: Partial<AuthForm> = {};
-    for (const k of Object.keys(auth) as AuthField[]) {
-      const v = auth[k].trim();
-      if (v !== "") authPayload[k] = v;
+    const sels = buildSelectionsPayload();
+    if (sels.length === 0) {
+      toast({ title: "No format selected", description: "Pick at least one format + container." });
+      return;
     }
-
     setSubmitting(true);
     try {
-      const res = await fetch("/api/jobs", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          urls: list,
-          format,
-          container,
-          compat,
-          extraArgs: extraArgs.trim() || undefined,
-          auth: Object.keys(authPayload).length ? authPayload : undefined,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
-      toast({ title: "Enqueued", description: `${data.jobs?.length ?? list.length} job(s) queued.` });
-      setUrls("");
-      // Clear ephemeral secrets (2FA expires in seconds; cleartext passwords
-      // shouldn't linger in the input). Leave non-secret fields alone in
-      // case the user is queueing more URLs against the same site.
-      setAuth(a => ({ ...a, password: "", twoFactor: "", videoPassword: "", apPassword: "", clientCertPassword: "" }));
-    } catch (err) {
-      toast({ title: "Failed to enqueue", description: (err as Error).message });
+      const result = await postJobs(list, sels);
+      if (result === "ok") {
+        setUrls("");
+        setAuth(a => ({ ...a, password: "", twoFactor: "", videoPassword: "", apPassword: "", clientCertPassword: "" }));
+      }
+      // "conflict" → modal is now open; "error" → toast already shown.
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function onResolveConfirm() {
+    const list = urls.split("\n").map(s => s.trim()).filter(Boolean);
+    const sels = buildSelectionsPayload();
+    setSubmitting(true);
+    try {
+      const result = await postJobs(list, sels, resolution, resolution === "save-as" ? saveAsNames : undefined);
+      if (result === "ok") {
+        setConflicts(null);
+        setUrls("");
+        setAuth(a => ({ ...a, password: "", twoFactor: "", videoPassword: "", apPassword: "", clientCertPassword: "" }));
+      }
+      // a fresh 409 would re-open with new conflicts; error keeps the modal.
     } finally {
       setSubmitting(false);
     }
@@ -154,51 +266,46 @@ export default function Page() {
             </div>
 
             <div className="space-y-2">
-              <Label>Format preset</Label>
-              <div className="flex flex-wrap gap-2">
-                {FORMAT_KEYS.map(key => (
-                  <Button
-                    key={key}
-                    type="button"
-                    size="sm"
-                    variant={format === key ? "default" : "outline"}
-                    onClick={() => setFormat(key)}
-                  >
-                    {FORMATS[key].label}
-                  </Button>
-                ))}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Container</Label>
-              <div className="flex flex-wrap gap-2">
-                {CONTAINER_KEYS.map(key => (
-                  <Button
-                    key={key}
-                    type="button"
-                    size="sm"
-                    variant={container === key ? "default" : "outline"}
-                    onClick={() => setContainer(key)}
-                    disabled={format === "audio" || compat === "ios"}
-                    title={
-                      format === "audio" ? "n/a for audio-only" :
-                      compat === "ios" ? "iOS compatibility forces MP4" :
-                      undefined
-                    }
-                  >
-                    {CONTAINERS[key].label}
-                  </Button>
-                ))}
-              </div>
+              <Label>Formats &amp; containers</Label>
               <p className="text-xs text-muted-foreground">
-                Output container. Auto leaves it to yt-dlp; others remux to
-                that format (no re-encode unless codec-incompatible).
+                Tick any number of containers under any number of formats. Each
+                ticked format×container pair becomes its own download (e.g. Best
+                → MP4, MKV and Audio → MP3, FLAC = 4 jobs).
               </p>
+              <div className="space-y-2">
+                {FORMAT_KEYS.map(format => {
+                  const kind = FORMATS[format].kind;
+                  const allowed = containersFor(kind);
+                  const set = selections[format];
+                  return (
+                    <div
+                      key={format}
+                      className="flex flex-wrap items-center gap-2 rounded-md border bg-card/30 px-3 py-2"
+                    >
+                      <span className="w-28 shrink-0 text-sm font-medium">
+                        {FORMATS[format].label}
+                      </span>
+                      <div className="flex flex-wrap gap-2">
+                        {allowed.map(c => (
+                          <Button
+                            key={c}
+                            type="button"
+                            size="sm"
+                            variant={set.has(c) ? "default" : "outline"}
+                            onClick={() => toggleContainer(format, c)}
+                          >
+                            {CONTAINER_LABELS[c]}
+                          </Button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="space-y-2">
-              <Label>Compatibility</Label>
+              <Label>Compatibility (video only)</Label>
               <div className="flex flex-wrap gap-2">
                 {COMPAT_KEYS.map(key => (
                   <Button
@@ -207,15 +314,15 @@ export default function Page() {
                     size="sm"
                     variant={compat === key ? "default" : "outline"}
                     onClick={() => setCompat(key)}
-                    disabled={format === "audio"}
-                    title={format === "audio" ? "n/a for audio-only" : COMPATS[key].hint}
+                    title={COMPATS[key].hint}
                   >
                     {COMPATS[key].label}
                   </Button>
                 ))}
               </div>
               <p className="text-xs text-muted-foreground">
-                {COMPATS[compat].hint}
+                {COMPATS[compat].hint} iOS forces video downloads to MP4. Audio
+                downloads ignore this.
               </p>
             </div>
 
@@ -337,7 +444,108 @@ export default function Page() {
           ))
         )}
       </div>
+
+      <ConflictModal
+        conflicts={conflicts}
+        resolution={resolution}
+        setResolution={setResolution}
+        saveAsNames={saveAsNames}
+        setSaveAsNames={setSaveAsNames}
+        onConfirm={onResolveConfirm}
+        onClose={() => setConflicts(null)}
+        busy={submitting}
+      />
     </div>
+  );
+}
+
+const RESOLUTION_OPTIONS: { value: Resolution; label: string; hint: string }[] = [
+  { value: "append", label: "Append (keep both)", hint: "Download anyway; the new file coexists, distinguished by its content hash." },
+  { value: "overwrite", label: "Overwrite", hint: "Delete the existing entry (local + MEGA) then re-download." },
+  { value: "save-as", label: "Save as…", hint: "Keep the existing entry; save the new one under a custom name." },
+  { value: "cancel", label: "Skip these", hint: "Don't re-download the conflicting items (others still queue)." },
+];
+
+function ConflictModal(props: {
+  conflicts: Conflict[] | null;
+  resolution: Resolution;
+  setResolution: (r: Resolution) => void;
+  saveAsNames: Record<string, string>;
+  setSaveAsNames: (n: Record<string, string>) => void;
+  onConfirm: () => void;
+  onClose: () => void;
+  busy: boolean;
+}) {
+  const { conflicts } = props;
+  const open = !!conflicts && conflicts.length > 0;
+  return (
+    <Dialog open={open} onOpenChange={o => { if (!o) props.onClose(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Already downloaded</DialogTitle>
+          <DialogDescription>
+            {conflicts?.length ?? 0} of the requested downloads already exist
+            with the same URL + format + container. Choose how to proceed.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="max-h-40 overflow-y-auto rounded-md border bg-card/30 p-2 text-xs">
+          {conflicts?.map(c => (
+            <div key={c.existingId} className="truncate py-0.5" title={`${c.title} — ${c.url}`}>
+              <span className="font-medium">{c.title}</span>{" "}
+              <span className="text-muted-foreground">[{c.format}/{c.container}]</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="space-y-2">
+          {RESOLUTION_OPTIONS.map(opt => (
+            <label key={opt.value} className="flex cursor-pointer items-start gap-2 rounded-md border p-2 text-sm">
+              <input
+                type="radio"
+                name="resolution"
+                className="mt-1"
+                checked={props.resolution === opt.value}
+                onChange={() => props.setResolution(opt.value)}
+              />
+              <span>
+                <span className="font-medium">{opt.label}</span>
+                <span className="block text-xs text-muted-foreground">{opt.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+
+        {props.resolution === "save-as" && (
+          <div className="space-y-2">
+            <Label className="text-xs">New names</Label>
+            {conflicts?.map(c => {
+              const key = comboKey(c.url, c.format, c.container);
+              return (
+                <Input
+                  key={c.existingId}
+                  value={props.saveAsNames[key] ?? ""}
+                  placeholder={`${c.title} [${c.format}/${c.container}]`}
+                  onChange={e =>
+                    props.setSaveAsNames({ ...props.saveAsNames, [key]: e.target.value })
+                  }
+                  className="text-sm"
+                />
+              );
+            })}
+          </div>
+        )}
+
+        <DialogFooter>
+          <Button variant="outline" onClick={props.onClose} disabled={props.busy}>
+            Dismiss
+          </Button>
+          <Button onClick={props.onConfirm} disabled={props.busy}>
+            {props.busy ? "Working…" : "Confirm"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

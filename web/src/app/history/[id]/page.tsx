@@ -76,6 +76,12 @@ export default function Page({ params }: { params: { id: string } }) {
               <dd className="break-all">{job.file_path}</dd>
             </>
           )}
+          {job.content_hash && (
+            <>
+              <dt className="text-muted-foreground">sha256</dt>
+              <dd className="break-all font-mono text-xs">{job.content_hash}</dd>
+            </>
+          )}
         </dl>
       </section>
 
