@@ -52,6 +52,115 @@ export function useJobsWs(): { connected: boolean; jobs: JobRow[] } {
   };
 
   useEffect(() => {
+    // Reducer shared by the desktop (Tauri events) and browser (WebSocket) paths.
+    const apply = (ev: WsEvent) => {
+      const map = jobsRef.current;
+      switch (ev.type) {
+        case "snapshot": {
+          map.clear();
+          for (const j of ev.jobs) map.set(j.id, j);
+          flush();
+          break;
+        }
+        case "progress": {
+          const existing = map.get(ev.id);
+          if (!existing) return;
+          // Go's encoding/json omits zero-valued fields (omitempty), so a
+          // progress event with downloaded_bytes=0 has no `progress` field.
+          // Treat any missing numeric as "keep current".
+          map.set(ev.id, {
+            ...existing,
+            progress: typeof ev.progress === "number" ? ev.progress : existing.progress,
+            speed: ev.speed ?? existing.speed,
+            eta: ev.eta ?? existing.eta,
+          });
+          flush();
+          break;
+        }
+        case "status": {
+          if (TERMINAL.has(ev.status)) {
+            if (map.delete(ev.id)) flush();
+            return;
+          }
+          const existing = map.get(ev.id);
+          if (existing) {
+            map.set(ev.id, {
+              ...existing,
+              status: ev.status,
+              error: ev.error ?? existing.error,
+              file_path: ev.filePath ?? existing.file_path,
+            });
+          } else {
+            // Status arriving for a job we don't yet have (e.g. raced ahead of
+            // the initial snapshot). Synthesize a minimal row so the UI doesn't
+            // drop it on the floor.
+            map.set(ev.id, {
+              id: ev.id,
+              url: "",
+              format: "",
+              extra_args: null,
+              cookies_file: null,
+              status: ev.status,
+              progress: 0,
+              speed: null,
+              eta: null,
+              title: null,
+              file_path: ev.filePath ?? null,
+              error: ev.error ?? null,
+              created_at: Date.now(),
+              started_at: null,
+              finished_at: null,
+              mega_status: null,
+              mega_uploaded_at: null,
+              mega_error: null,
+              mega_progress: 0,
+              mega_speed: null,
+              container: null,
+              compat: null,
+              content_hash: null,
+              save_as: null,
+              mega_remote_name: null,
+            });
+          }
+          flush();
+          break;
+        }
+        case "title": {
+          const existing = map.get(ev.id);
+          if (!existing) return;
+          map.set(ev.id, { ...existing, title: ev.title });
+          flush();
+          break;
+        }
+      }
+    };
+
+    // Desktop (Tauri): the custom protocol can't carry a WebSocket, so live
+    // updates arrive as `downloader-event` Tauri events and the initial
+    // snapshot comes from GET /api/jobs.
+    const tauri = (window as unknown as { __TAURI__?: { event?: { listen?: unknown } } }).__TAURI__;
+    if (tauri?.event?.listen) {
+      const ev = tauri.event as {
+        listen: (name: string, cb: (e: { payload: WsEvent }) => void) => Promise<() => void>;
+      };
+      let unlisten: (() => void) | undefined;
+      let disposed = false;
+      fetch("/api/jobs")
+        .then((r) => r.json())
+        .then((d: { jobs?: JobRow[] }) => apply({ type: "snapshot", jobs: d.jobs ?? [] }))
+        .catch(() => { /* snapshot is best-effort; deltas still flow */ });
+      ev.listen("downloader-event", (e) => apply(e.payload)).then((un) => {
+        if (disposed) un();
+        else unlisten = un;
+      });
+      setConnected(true);
+      return () => {
+        disposed = true;
+        if (unlisten) unlisten();
+      };
+    }
+
+    // Browser (Docker): WebSocket to /api/ws.
     let ws: WebSocket | null = null;
     let closed = false;
     let attempt = 0;
@@ -75,86 +184,7 @@ export function useJobsWs(): { connected: boolean; jobs: JobRow[] } {
         } catch {
           return;
         }
-
-        const map = jobsRef.current;
-        switch (ev.type) {
-          case "snapshot": {
-            map.clear();
-            for (const j of ev.jobs) map.set(j.id, j);
-            flush();
-            break;
-          }
-          case "progress": {
-            const existing = map.get(ev.id);
-            if (!existing) return;
-            // Go's encoding/json omits zero-valued fields (omitempty), so a
-            // progress event with downloaded_bytes=0 has no `progress` field.
-            // Treat any missing numeric as "keep current".
-            map.set(ev.id, {
-              ...existing,
-              progress: typeof ev.progress === "number" ? ev.progress : existing.progress,
-              speed: ev.speed ?? existing.speed,
-              eta: ev.eta ?? existing.eta,
-            });
-            flush();
-            break;
-          }
-          case "status": {
-            if (TERMINAL.has(ev.status)) {
-              if (map.delete(ev.id)) flush();
-              return;
-            }
-            const existing = map.get(ev.id);
-            if (existing) {
-              map.set(ev.id, {
-                ...existing,
-                status: ev.status,
-                error: ev.error ?? existing.error,
-                file_path: ev.filePath ?? existing.file_path,
-              });
-            } else {
-              // Status arriving for a job we don't yet have (e.g. raced
-              // ahead of the initial snapshot). Synthesize a minimal row
-              // so the UI doesn't drop it on the floor.
-              map.set(ev.id, {
-                id: ev.id,
-                url: "",
-                format: "",
-                extra_args: null,
-                cookies_file: null,
-                status: ev.status,
-                progress: 0,
-                speed: null,
-                eta: null,
-                title: null,
-                file_path: ev.filePath ?? null,
-                error: ev.error ?? null,
-                created_at: Date.now(),
-                started_at: null,
-                finished_at: null,
-                mega_status: null,
-                mega_uploaded_at: null,
-                mega_error: null,
-                mega_progress: 0,
-                mega_speed: null,
-                container: null,
-                compat: null,
-                content_hash: null,
-                save_as: null,
-                mega_remote_name: null,
-              });
-            }
-            flush();
-            break;
-          }
-          case "title": {
-            const existing = map.get(ev.id);
-            if (!existing) return;
-            map.set(ev.id, { ...existing, title: ev.title });
-            flush();
-            break;
-          }
-        }
+        apply(ev);
       };
 
       ws.onclose = () => {

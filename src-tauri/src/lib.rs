@@ -6,6 +6,7 @@
 // sidecar via the custom `app://` URI scheme, and (in a later phase) bridges
 // the downloader's SSE stream to the webview as Tauri events.
 
+mod events;
 pub mod proxy;
 mod sockets;
 mod supervisor;

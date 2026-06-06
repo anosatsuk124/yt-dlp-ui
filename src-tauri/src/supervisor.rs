@@ -70,6 +70,10 @@ pub fn start(app: &AppHandle, sockets: &SocketPaths) -> Result<(), Box<dyn std::
     drain_logs("downloader", dl_rx);
     drain_logs("web", web_rx);
 
+    // Bridge the downloader SSE stream to the webview as Tauri events (the
+    // desktop replacement for the browser WebSocket).
+    crate::events::start(app.clone(), sockets.dl.clone());
+
     // Readiness gate: once both sockets answer, swap the splash for the app.
     let handle = app.clone();
     let socks = sockets.clone();
