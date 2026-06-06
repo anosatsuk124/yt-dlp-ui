@@ -312,6 +312,11 @@ type Pool struct {
 	wg          sync.WaitGroup
 	stopWorkers context.CancelFunc
 	workersCtx  context.Context
+
+	// Runtime-updatable output directory (set via PATCH /config). Guarded by
+	// its own mutex rather than p.mu, which resize holds across wg.Wait().
+	ddMu        sync.Mutex
+	downloadDir string
 }
 
 func newPool(cfg Config, reg *Registry, bus *EventBus) *Pool {
@@ -321,6 +326,7 @@ func newPool(cfg Config, reg *Registry, bus *EventBus) *Pool {
 		bus:         bus,
 		maxParallel: cfg.MaxParallel,
 		jobs:        make(chan Job, 1000),
+		downloadDir: cfg.DownloadDir,
 	}
 	p.workersCtx, p.stopWorkers = context.WithCancel(context.Background())
 	p.startWorkers(p.maxParallel)
@@ -354,6 +360,18 @@ func (p *Pool) worker(ctx context.Context, id int) {
 // enqueue queues a job. The caller has already added it to the registry.
 func (p *Pool) enqueue(j Job) {
 	p.jobs <- j
+}
+
+func (p *Pool) setDownloadDir(dir string) {
+	p.ddMu.Lock()
+	p.downloadDir = dir
+	p.ddMu.Unlock()
+}
+
+func (p *Pool) getDownloadDir() string {
+	p.ddMu.Lock()
+	defer p.ddMu.Unlock()
+	return p.downloadDir
 }
 
 // resize drains current workers, swaps the channel, and starts a new set.
@@ -456,7 +474,7 @@ func (p *Pool) run(parentCtx context.Context, j Job) {
 		j.CookiesFile = tmp
 	}
 
-	args := buildArgs(j, p.cfg.DownloadDir)
+	args := buildArgs(j, p.getDownloadDir())
 	slog.Info("running yt-dlp", "id", j.ID, "args", redactArgs(args))
 
 	cmd := exec.Command(p.cfg.YTDLPPath, args...)
@@ -1181,21 +1199,28 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) patchConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		MaxParallel int `json:"maxParallel"`
+		MaxParallel *int    `json:"maxParallel,omitempty"`
+		DownloadDir *string `json:"downloadDir,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if body.MaxParallel < 1 {
-		http.Error(w, "maxParallel must be >= 1", http.StatusBadRequest)
-		return
+	resp := map[string]any{}
+	if body.MaxParallel != nil {
+		if *body.MaxParallel < 1 {
+			http.Error(w, "maxParallel must be >= 1", http.StatusBadRequest)
+			return
+		}
+		s.pool.resize(*body.MaxParallel)
+		resp["maxParallel"] = *body.MaxParallel
 	}
-	s.pool.resize(body.MaxParallel)
+	if body.DownloadDir != nil && *body.DownloadDir != "" {
+		s.pool.setDownloadDir(*body.DownloadDir)
+		resp["downloadDir"] = *body.DownloadDir
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"maxParallel": body.MaxParallel,
-	})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {

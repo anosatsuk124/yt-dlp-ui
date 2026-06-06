@@ -41,6 +41,7 @@ export async function GET() {
     defaultContainer: getSetting("default_container") ?? "auto",
     defaultCompat:    getSetting("default_compat") ?? "auto",
     maxParallel:      parseInt(getSetting("max_parallel") ?? "2", 10),
+    downloadDir:      getSetting("download_dir") ?? "",
     mega,
   });
 }
@@ -50,6 +51,7 @@ interface PutBody {
   defaultContainer?: string;
   defaultCompat?: string;
   maxParallel?: number;
+  downloadDir?: string;
   mega?: {
     enabled?: boolean;
     email?: string;
@@ -83,7 +85,19 @@ export async function PUT(req: Request) {
   if (typeof body.maxParallel === "number" && body.maxParallel >= 1 && body.maxParallel <= 32) {
     setSetting("max_parallel", String(body.maxParallel));
     try {
-      await patchConfig(body.maxParallel);
+      await patchConfig({ maxParallel: body.maxParallel });
+    } catch (e) {
+      return NextResponse.json({ error: `downloader: ${(e as Error).message}` }, { status: 502 });
+    }
+  }
+  // Desktop-only: a user-chosen output directory, pushed to the downloader and
+  // re-asserted on every SSE reconnect (see syncSettings). Unset under Docker,
+  // where the downloader keeps its bind-mounted /downloads.
+  if (typeof body.downloadDir === "string" && body.downloadDir.trim()) {
+    const dir = body.downloadDir.trim();
+    setSetting("download_dir", dir);
+    try {
+      await patchConfig({ downloadDir: dir });
     } catch (e) {
       return NextResponse.json({ error: `downloader: ${(e as Error).message}` }, { status: 502 });
     }

@@ -47,6 +47,8 @@ export default function Page() {
   const [defaultContainer, setDefaultContainer] = useState<ContainerKey>("auto");
   const [defaultCompat, setDefaultCompat] = useState<CompatKey>("auto");
   const [maxParallel, setMaxParallel] = useState(2);
+  const [downloadDir, setDownloadDir] = useState("");
+  const [isDesktop, setIsDesktop] = useState(false);
   const [mega, setMega] = useState<MegaSettings>(DEFAULT_MEGA);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -61,6 +63,7 @@ export default function Page() {
         defaultContainer?: string;
         defaultCompat?: string;
         maxParallel?: number;
+        downloadDir?: string;
         mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string; audioSubdir?: string; maxParallel?: number };
       }) => {
         const fmt = s.defaultFormat ? normalizeFormatKey(s.defaultFormat) : "best";
@@ -75,6 +78,7 @@ export default function Page() {
           setDefaultCompat(s.defaultCompat);
         }
         if (typeof s.maxParallel === "number") setMaxParallel(s.maxParallel);
+        if (typeof s.downloadDir === "string") setDownloadDir(s.downloadDir);
         if (s.mega) {
           setMega({
             enabled: !!s.mega.enabled,
@@ -90,6 +94,39 @@ export default function Page() {
       .catch(() => { /* leave defaults */ })
       .finally(() => setLoading(false));
   }, []);
+
+  // The download-folder picker is desktop-only (needs the native dialog).
+  useEffect(() => {
+    setIsDesktop(!!(window as unknown as { __TAURI__?: unknown }).__TAURI__);
+  }, []);
+
+  // Open the native folder picker and apply the choice immediately (it is
+  // pushed to the downloader and persisted server-side).
+  async function chooseDownloadDir() {
+    const tauri = (window as unknown as {
+      __TAURI__?: { dialog?: { open?: (opts: unknown) => Promise<string | string[] | null> } };
+    }).__TAURI__;
+    if (!tauri?.dialog?.open) return;
+    const picked = await tauri.dialog.open({
+      directory: true,
+      multiple: false,
+      defaultPath: downloadDir || undefined,
+    });
+    if (typeof picked !== "string" || !picked) return;
+    setDownloadDir(picked);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ downloadDir: picked }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
+      toast({ title: "Download folder updated", description: picked });
+    } catch (err) {
+      toast({ title: "Update failed", description: (err as Error).message });
+    }
+  }
 
   // When the format kind changes, keep the container valid for the new kind.
   function onDefaultFormatChange(fmt: FormatKey) {
@@ -237,6 +274,25 @@ export default function Page() {
                   Max parallel is also applied immediately to the downloader.
                 </p>
               </div>
+
+              {isDesktop && (
+                <div className="space-y-2">
+                  <Label>Download folder</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      readOnly
+                      value={downloadDir || "~/Downloads/yt-dlp-ui (default)"}
+                      className="flex-1"
+                    />
+                    <Button type="button" variant="outline" onClick={chooseDownloadDir}>
+                      Choose…
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Where finished downloads are saved. Applied to the downloader immediately.
+                  </p>
+                </div>
+              )}
 
               <div className="space-y-4 rounded-md border p-4">
                 <div className="flex items-center justify-between">

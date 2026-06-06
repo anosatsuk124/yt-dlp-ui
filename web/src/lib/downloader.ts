@@ -44,11 +44,16 @@ export async function cancelJob(id: string): Promise<void> {
   }
 }
 
-export async function patchConfig(maxParallel: number): Promise<void> {
+export interface DownloaderConfig {
+  maxParallel?: number;
+  downloadDir?: string;
+}
+
+export async function patchConfig(config: DownloaderConfig): Promise<void> {
   const res = await downloaderFetch(`${DOWNLOADER_URL}/config`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ maxParallel }),
+    body: JSON.stringify(config),
   });
   if (!res.ok) {
     throw new Error(`downloader PATCH /config ${res.status}`);

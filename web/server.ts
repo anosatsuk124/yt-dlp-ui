@@ -156,11 +156,22 @@ async function syncSettings(reason: string) {
     const n = parseInt(raw, 10);
     if (Number.isFinite(n) && n >= 1) {
       try {
-        await patchConfig(n);
+        await patchConfig({ maxParallel: n });
         console.log(`[config/${reason}] set downloader maxParallel=${n}`);
       } catch (e) {
         console.log(`[config/${reason}] failed to set maxParallel:`, (e as Error).message);
       }
+    }
+  }
+  // Desktop-only: re-assert the user-chosen output directory. Empty under
+  // Docker, where the downloader keeps its bind-mounted /downloads.
+  const dir = getSetting("download_dir");
+  if (dir && dir.trim()) {
+    try {
+      await patchConfig({ downloadDir: dir });
+      console.log(`[config/${reason}] set downloader downloadDir=${dir}`);
+    } catch (e) {
+      console.log(`[config/${reason}] failed to set downloadDir:`, (e as Error).message);
     }
   }
   // Re-assert the MEGA uploader pool size against the DB (no-op if already
