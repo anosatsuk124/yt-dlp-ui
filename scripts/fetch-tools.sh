@@ -101,9 +101,13 @@ case "$OS" in
     fi
     ;;
   macos)
-    # evermeet provides notarized static Intel builds (run under Rosetta on arm).
-    dl "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip" ffmpeg.zip
-    dl "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip" ffprobe.zip
+    # martin-riedl.de publishes per-arch static macOS builds (ffmpeg + ffprobe),
+    # so Apple Silicon gets a native arm64 binary instead of an Intel-only one
+    # that would need Rosetta for format merges / audio extraction.
+    case "$ARCH" in x64) mr=amd64 ;; arm64) mr=arm64 ;; esac
+    base="https://ffmpeg.martin-riedl.de/redirect/latest/macos/${mr}/release"
+    dl "${base}/ffmpeg.zip" ffmpeg.zip
+    dl "${base}/ffprobe.zip" ffprobe.zip
     unzip -q ffmpeg.zip && unzip -q ffprobe.zip
     install -m 0755 ffmpeg "${DEST}/ffmpeg"
     install -m 0755 ffprobe "${DEST}/ffprobe"
