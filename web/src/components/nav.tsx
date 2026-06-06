@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Download, List, Cookie, KeyRound, FileLock2, Settings } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useNavGuard } from "@/components/nav-guard";
 
 const links = [
   { href: "/queue",    label: "Queue",       icon: Download },
@@ -16,6 +17,7 @@ const links = [
 
 export function Nav() {
   const pathname = usePathname();
+  const { requestNavigate } = useNavGuard();
 
   return (
     <nav className="border-b">
@@ -27,6 +29,11 @@ export function Nav() {
             <Link
               key={href}
               href={href}
+              onClick={e => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                e.preventDefault();
+                requestNavigate(href);
+              }}
               className={cn(
                 "inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
                 active
