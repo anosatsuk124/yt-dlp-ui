@@ -33,6 +33,9 @@ export interface JobRow {
   content_hash: string | null;
   save_as: string | null;
   mega_remote_name: string | null;
+  // Per-job override for whether the local copy is kept after a successful MEGA
+  // upload: 1 = keep, 0 = delete, NULL = defer to the `mega_keep_local` setting.
+  mega_keep_local: number | null;
 }
 
 let _db: Database.Database | null = null;
@@ -74,6 +77,7 @@ function migrate(conn: Database.Database): void {
   if (!cols.has("content_hash"))     conn.exec("ALTER TABLE jobs ADD COLUMN content_hash TEXT");
   if (!cols.has("save_as"))          conn.exec("ALTER TABLE jobs ADD COLUMN save_as TEXT");
   if (!cols.has("mega_remote_name")) conn.exec("ALTER TABLE jobs ADD COLUMN mega_remote_name TEXT");
+  if (!cols.has("mega_keep_local"))  conn.exec("ALTER TABLE jobs ADD COLUMN mega_keep_local INTEGER");
 
   // Identity index for the pre-download conflict check (same url+format+container).
   conn.exec("CREATE INDEX IF NOT EXISTS idx_jobs_identity ON jobs(url, format, container)");
@@ -113,11 +117,14 @@ export function insertJob(row: {
   status: JobStatus;
   created_at: number;
   save_as?: string | null;
+  // 1/0 to pin the keep-local decision for this job; null/undefined defers to
+  // the global `mega_keep_local` setting at upload time.
+  mega_keep_local?: number | null;
 }): void {
   db().prepare(`
-    INSERT INTO jobs (id, url, format, container, compat, extra_args, cookies_file, status, created_at, save_as)
-    VALUES (@id, @url, @format, @container, @compat, @extra_args, @cookies_file, @status, @created_at, @save_as)
-  `).run({ save_as: null, ...row });
+    INSERT INTO jobs (id, url, format, container, compat, extra_args, cookies_file, status, created_at, save_as, mega_keep_local)
+    VALUES (@id, @url, @format, @container, @compat, @extra_args, @cookies_file, @status, @created_at, @save_as, @mega_keep_local)
+  `).run({ save_as: null, mega_keep_local: null, ...row });
 }
 
 export function getJob(id: string): JobRow | undefined {
