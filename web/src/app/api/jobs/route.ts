@@ -57,12 +57,13 @@ interface Combo {
   playlistTitle: string | null;
   // Pre-resolved title from the playlist entry (UI hint while queued).
   seedTitle: string | null;
-  // Cookies/auth resolved from the *submitted* URL, carried through to every
-  // entry. Flat-playlist entry URLs can be bare IDs that resolveCookiesFile /
-  // resolveAuthBinding can't match, so deriving per-entry would drop the
-  // credentials that made enumeration succeed for a private playlist.
-  cookiesFile: string | null;
-  auth: AuthOptions | null;
+  // Cookies / auth binding resolved from the *submitted* URL, used only as a
+  // FALLBACK: the entry URL is matched first (so abema.tv entries expanded from
+  // an abema.go.link short link still pick up the abema.tv binding), and the
+  // submitted URL's values fill in when the entry URL matches nothing (e.g. a
+  // bare-ID flat-playlist entry). authOverride is re-merged at job time.
+  fallbackCookies: string | null;
+  fallbackBinding: AuthOptions | null;
 }
 
 function comboKey(url: string, format: string, container: string): string {
@@ -161,8 +162,8 @@ export async function POST(req: Request) {
     url: string;
     playlistTitle: string | null;
     seedTitle: string | null;
-    cookiesFile: string | null;
-    auth: AuthOptions | null;
+    fallbackCookies: string | null;
+    fallbackBinding: AuthOptions | null;
   }
   const targets: Target[] = [];
   const resolveFailures: { url: string; error: string }[] = [];
@@ -191,11 +192,11 @@ export async function POST(req: Request) {
       for (const entry of resolved.entries) {
         const entryUrl = entry.url?.trim();
         if (!entryUrl) continue;
-        targets.push({ url: entryUrl, playlistTitle, seedTitle: entry.title?.trim() || null, cookiesFile, auth });
+        targets.push({ url: entryUrl, playlistTitle, seedTitle: entry.title?.trim() || null, fallbackCookies: cookiesFile, fallbackBinding: binding });
       }
     } else if (resolved && !resolved.isPlaylist) {
       // Confirmed single video → safe to enqueue the URL directly.
-      targets.push({ url, playlistTitle: null, seedTitle: null, cookiesFile, auth });
+      targets.push({ url, playlistTitle: null, seedTitle: null, fallbackCookies: cookiesFile, fallbackBinding: binding });
     } else {
       // resolve threw (downloader/extractor error) — can't tell whether this is
       // a playlist, so don't risk a multi-file single job.
@@ -225,8 +226,8 @@ export async function POST(req: Request) {
         kind: p.kind,
         playlistTitle: t.playlistTitle,
         seedTitle: t.seedTitle,
-        cookiesFile: t.cookiesFile,
-        auth: t.auth,
+        fallbackCookies: t.fallbackCookies,
+        fallbackBinding: t.fallbackBinding,
         existing,
       });
     }
@@ -288,12 +289,15 @@ export async function POST(req: Request) {
     }
 
     const id = uuid();
-    // Cookies/auth were resolved from the submitted URL and carried on the
-    // combo — reuse them so a private playlist's entries download with the same
-    // credentials that enumerated them (rather than re-deriving from a flat
-    // entry URL, which can be a bare ID that matches no binding).
-    const cookiesFile = c.cookiesFile;
-    const auth = c.auth;
+    // Resolve cookies/auth from the entry URL FIRST, then fall back to what the
+    // submitted URL resolved. This way:
+    //   - abema.tv entries expanded from an abema.go.link short link still get
+    //     the abema.tv binding (the short-link host matched nothing), and
+    //   - a bare-ID flat-playlist entry that matches no binding still inherits
+    //     the submitted playlist URL's credentials.
+    const cookiesFile = resolveCookiesFile(c.url) ?? c.fallbackCookies;
+    const binding = resolveAuthBinding(c.url) ?? c.fallbackBinding;
+    const auth = mergeAuth(binding, authOverride);
 
     insertJob({
       id,
