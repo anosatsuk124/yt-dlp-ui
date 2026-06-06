@@ -116,6 +116,15 @@ tauri-cli --version "^2"`) and the platform webview libraries (on Linux:
 bash scripts/build-desktop.sh
 ```
 
+On **Arch Linux**, `packaging/arch/PKGBUILD` builds a lean package
+(`yt-dlp-ui-desktop-git`) that depends on the system `yt-dlp`/`ffmpeg`/`nodejs`
+instead of bundling them, installs under `/usr/lib/yt-dlp-ui` and adds no extra
+binaries to `/usr/bin`:
+
+```bash
+cd packaging/arch && makepkg -si
+```
+
 ### Releases & auto-update
 
 `.github/workflows/release.yml` builds, signs (updater) and publishes a draft
