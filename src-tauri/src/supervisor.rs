@@ -44,6 +44,25 @@ pub fn start(app: &AppHandle, sockets: &SocketPaths) -> Result<(), Box<dyn std::
     // and inherits PATH, so it finds the system tools without extra env.
     let tools_bundled = bin.join(tool_name("yt-dlp")).exists();
 
+    // Resolve the node executable robustly. A GNOME/.desktop launcher hands the
+    // app a minimal PATH (no fnm/nvm shims), so probe bundled copies, the
+    // inherited PATH, then the usual system locations and fnm's default alias.
+    let node_path = resolve_node(exe_dir().as_deref(), &bin);
+
+    // PATH for the children: the bundled-tools dir (if any) and node's own dir,
+    // so the downloader finds ffmpeg + node for yt-dlp's `--js-runtimes node`
+    // even when launched from a GUI with a stripped-down PATH.
+    let mut path_dirs: Vec<PathBuf> = Vec::new();
+    if tools_bundled {
+        path_dirs.push(bin.clone());
+    }
+    if let Some(d) = node_path.parent() {
+        if !d.as_os_str().is_empty() {
+            path_dirs.push(d.to_path_buf());
+        }
+    }
+    let child_path = prepend_paths(&path_dirs);
+
     // Go downloader sidecar (REST + SSE over its own socket); our own binary,
     // always installed next to the app.
     let mut dl = app
@@ -51,32 +70,17 @@ pub fn start(app: &AppHandle, sockets: &SocketPaths) -> Result<(), Box<dyn std::
         .sidecar("downloader")?
         .env("DOWNLOADER_SOCKET", sockets.dl.as_str())
         .env("DOWNLOAD_DIR", lossy(&downloads))
-        .env("COOKIES_DIR", lossy(&cookies));
+        .env("COOKIES_DIR", lossy(&cookies))
+        .env("PATH", &child_path);
     if tools_bundled {
-        dl = dl
-            .env("YTDLP_PATH", lossy(&bin.join(tool_name("yt-dlp"))))
-            .env("PATH", prepend_path(&bin));
+        dl = dl.env("YTDLP_PATH", lossy(&bin.join(tool_name("yt-dlp"))));
     }
     let (dl_rx, dl_child) = dl.spawn()?;
 
-    // Next.js server: `node server.js` in the web dir. Prefer a bundled node —
-    // the externalBin placed next to the app (deb/AppImage) or the copy in the
-    // bundled-tools dir — and fall back to the system node on PATH (Arch pkg,
-    // which depends on nodejs). Spawned by absolute path so it does not rely on
-    // the externalBin sidecar layout.
-    let node_name = tool_name("node");
-    let bundled_node = exe_dir()
-        .map(|d| d.join(&node_name))
-        .filter(|p| p.exists())
-        .or_else(|| {
-            let p = bin.join(&node_name);
-            p.exists().then_some(p)
-        });
-    let node_cmd = match bundled_node {
-        Some(path) => app.shell().command(path),
-        None => app.shell().command("node"),
-    };
-    let mut web_cmd = node_cmd
+    // Next.js server: `node server.js` in the web dir, using the resolved node.
+    let (web_rx, web_child) = app
+        .shell()
+        .command(&node_path)
         .args(["server.js"])
         .current_dir(&web)
         .env("WEB_SOCKET", sockets.web.as_str())
@@ -85,11 +89,9 @@ pub fn start(app: &AppHandle, sockets: &SocketPaths) -> Result<(), Box<dyn std::
         .env("DOWNLOAD_DIR", lossy(&downloads))
         .env("COOKIES_DIR", lossy(&cookies))
         .env("CERTS_DIR", lossy(&certs))
-        .env("NODE_ENV", "production");
-    if tools_bundled {
-        web_cmd = web_cmd.env("PATH", prepend_path(&bin));
-    }
-    let (web_rx, web_child) = web_cmd.spawn()?;
+        .env("NODE_ENV", "production")
+        .env("PATH", &child_path)
+        .spawn()?;
 
     app.state::<Children>()
         .0
@@ -247,10 +249,33 @@ fn bin_dir(app: &AppHandle) -> PathBuf {
     resource_subdir(app, "bin", marker)
 }
 
-fn prepend_path(bin: &Path) -> String {
+fn prepend_paths(dirs: &[PathBuf]) -> String {
     let sep = if cfg!(windows) { ";" } else { ":" };
-    match std::env::var("PATH") {
-        Ok(cur) => format!("{}{}{}", bin.display(), sep, cur),
-        Err(_) => bin.display().to_string(),
+    let mut parts: Vec<String> = dirs.iter().map(|d| d.display().to_string()).collect();
+    if let Ok(cur) = std::env::var("PATH") {
+        if !cur.is_empty() {
+            parts.push(cur);
+        }
     }
+    parts.join(sep)
+}
+
+// Locate the node executable. node is always bundled (the externalBin next to
+// the app for deb/AppImage, or the bundled-tools dir for the Arch package), so
+// the app never depends on the launch PATH — a GUI launcher (GNOME .desktop)
+// hands over a minimal PATH that omits version managers like fnm/nvm. The bare
+// "node" fallback only matters if a build forgot to ship it.
+fn resolve_node(exe: Option<&Path>, bin: &Path) -> PathBuf {
+    let name = tool_name("node");
+    if let Some(d) = exe {
+        let p = d.join(&name);
+        if p.exists() {
+            return p;
+        }
+    }
+    let p = bin.join(&name);
+    if p.exists() {
+        return p;
+    }
+    PathBuf::from(name)
 }
