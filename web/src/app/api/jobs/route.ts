@@ -195,8 +195,12 @@ export async function POST(req: Request) {
         targets.push({ url: entryUrl, playlistTitle, seedTitle: entry.title?.trim() || null, fallbackCookies: cookiesFile, fallbackBinding: binding });
       }
     } else if (resolved && !resolved.isPlaylist) {
-      // Confirmed single video → safe to enqueue the URL directly.
-      targets.push({ url, playlistTitle: null, seedTitle: null, fallbackCookies: cookiesFile, fallbackBinding: binding });
+      // Confirmed single video. Enqueue yt-dlp's canonical webpage_url when it
+      // resolved one (so a short link like abema.go.link becomes the real
+      // abema.tv page — needed for per-domain auth/cookies and identity dedup);
+      // fall back to the submitted URL otherwise.
+      const canonical = resolved.canonicalUrl?.trim() || url;
+      targets.push({ url: canonical, playlistTitle: null, seedTitle: resolved.title?.trim() || null, fallbackCookies: cookiesFile, fallbackBinding: binding });
     } else {
       // resolve threw (downloader/extractor error) — can't tell whether this is
       // a playlist, so don't risk a multi-file single job.

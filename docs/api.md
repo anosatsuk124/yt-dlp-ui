@@ -538,10 +538,17 @@ URL out into per-video jobs. Response:
 }
 ```
 
-`isPlaylist` is `false` (with no `entries`) for a plain single-video URL. The
-cookie jar is copied to a writable per-request temp (the `/cookies` mount is
-read-only). `502 Bad Gateway` if `yt-dlp` errors or its output can't be parsed;
-the caller treats that as "not a playlist" and enqueues the URL as-is.
+For a plain single-video URL, `isPlaylist` is `false` with no `entries`;
+`canonicalUrl` carries yt-dlp's resolved `webpage_url` (and `title` the video
+title) so the caller can enqueue the real page instead of an opaque short link
+(e.g. `abema.go.link/…` → `abema.tv/video/episode/…`) — important for per-domain
+cookie/auth matching and identity de-dup. The cookie jar is copied to a writable
+per-request temp (the `/cookies` mount is read-only). `502 Bad Gateway` if
+`yt-dlp` errors or its output can't be parsed.
+
+```json
+{ "isPlaylist": false, "canonicalUrl": "https://abema.tv/video/episode/…", "title": "Episode 1" }
+```
 
 ### `DELETE /jobs/:id` — cancel
 

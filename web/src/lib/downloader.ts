@@ -45,6 +45,10 @@ export interface ResolveResult {
   isPlaylist: boolean;
   playlistTitle?: string;
   entries?: ResolveEntry[];
+  // For a single (non-playlist) URL: yt-dlp's resolved webpage_url, so the
+  // caller can enqueue the canonical page instead of an opaque short link.
+  canonicalUrl?: string;
+  title?: string;
 }
 
 // Ask the downloader whether a URL is a playlist and, if so, enumerate its

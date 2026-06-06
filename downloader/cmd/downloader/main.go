@@ -151,11 +151,16 @@ type ResolveEntry struct {
 }
 
 // ResolveResponse is the body of POST /resolve. IsPlaylist is false for a plain
-// single-video URL (Entries is then empty and the caller downloads the URL as-is).
+// single-video URL; CanonicalURL then carries yt-dlp's resolved webpage_url so
+// the caller can enqueue the real page (e.g. an abema.tv episode behind an
+// abema.go.link short link) instead of the opaque submitted URL — important for
+// per-domain cookie/auth matching and de-duplication.
 type ResolveResponse struct {
 	IsPlaylist    bool           `json:"isPlaylist"`
 	PlaylistTitle string         `json:"playlistTitle,omitempty"`
 	Entries       []ResolveEntry `json:"entries,omitempty"`
+	CanonicalURL  string         `json:"canonicalUrl,omitempty"`
+	Title         string         `json:"title,omitempty"`
 }
 
 // authCreds is the shared bundle of yt-dlp credential fields carried by both a
@@ -1287,9 +1292,11 @@ func buildResolveArgs(r ResolveRequest) []string {
 // single video (IsPlaylist=false, empty Entries).
 func parseResolveOutput(out []byte) (ResolveResponse, error) {
 	var info struct {
-		Type    string `json:"_type"`
-		Title   string `json:"title"`
-		Entries []struct {
+		Type        string `json:"_type"`
+		Title       string `json:"title"`
+		WebpageURL  string `json:"webpage_url"`
+		OriginalURL string `json:"original_url"`
+		Entries     []struct {
 			URL        string `json:"url"`
 			WebpageURL string `json:"webpage_url"`
 			ID         string `json:"id"`
@@ -1300,7 +1307,15 @@ func parseResolveOutput(out []byte) (ResolveResponse, error) {
 		return ResolveResponse{}, err
 	}
 	if len(info.Entries) == 0 {
-		return ResolveResponse{IsPlaylist: false}, nil
+		// Single video. Hand back yt-dlp's canonical webpage_url so the caller
+		// can enqueue the real page instead of an opaque short link (matters for
+		// per-domain auth/cookies and identity de-dup). Fall back to
+		// original_url; empty if the extractor set neither.
+		canonical := strings.TrimSpace(info.WebpageURL)
+		if canonical == "" {
+			canonical = strings.TrimSpace(info.OriginalURL)
+		}
+		return ResolveResponse{IsPlaylist: false, CanonicalURL: canonical, Title: strings.TrimSpace(info.Title)}, nil
 	}
 	entries := make([]ResolveEntry, 0, len(info.Entries))
 	for _, e := range info.Entries {
