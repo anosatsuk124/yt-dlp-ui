@@ -22,7 +22,13 @@ pub fn start(app: &AppHandle, sockets: &SocketPaths) -> Result<(), Box<dyn std::
         .path()
         .app_data_dir()
         .unwrap_or_else(|_| std::env::temp_dir());
-    let downloads = data_dir.join("downloads");
+    // Finished files land in the user's Downloads/yt-dlp-ui (visible, native),
+    // while cookies/certs/DB stay in the private app-data dir.
+    let downloads = app
+        .path()
+        .download_dir()
+        .map(|d| d.join("yt-dlp-ui"))
+        .unwrap_or_else(|_| data_dir.join("downloads"));
     let cookies = data_dir.join("cookies");
     let certs = data_dir.join("certs");
     let db_path = data_dir.join("app.db");
@@ -155,6 +161,21 @@ fn lossy(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
+// Probe the resource dir for `name` (e.g. "web"/"bin"), tolerating both the
+// flat (<resource>/name) and prefixed (<resource>/resources/name) layouts the
+// bundler may produce, by checking for a marker file inside the candidate.
+fn resource_subdir(app: &AppHandle, name: &str, marker: &str) -> PathBuf {
+    if let Ok(rd) = app.path().resource_dir() {
+        for cand in [rd.join(name), rd.join("resources").join(name)] {
+            if cand.join(marker).exists() {
+                return cand;
+            }
+        }
+        return rd.join(name);
+    }
+    PathBuf::from(name)
+}
+
 // Directory holding the built Next.js app (server.js + node_modules + .next +
 // schema.sql). Overridable in dev via YTDLPUI_WEB_DIR; bundled under the
 // resource dir in production.
@@ -162,10 +183,7 @@ fn web_dir(app: &AppHandle) -> PathBuf {
     if let Ok(p) = std::env::var("YTDLPUI_WEB_DIR") {
         return PathBuf::from(p);
     }
-    app.path()
-        .resource_dir()
-        .map(|r| r.join("web"))
-        .unwrap_or_else(|_| PathBuf::from("web"))
+    resource_subdir(app, "web", "server.js")
 }
 
 // Directory holding the bundled tool binaries (yt-dlp, ffmpeg, ffprobe, node);
@@ -174,10 +192,8 @@ fn bin_dir(app: &AppHandle) -> PathBuf {
     if let Ok(p) = std::env::var("YTDLPUI_BIN_DIR") {
         return PathBuf::from(p);
     }
-    app.path()
-        .resource_dir()
-        .map(|r| r.join("bin"))
-        .unwrap_or_else(|_| PathBuf::from("bin"))
+    let marker = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
+    resource_subdir(app, "bin", marker)
 }
 
 fn yt_dlp_path(bin: &Path) -> String {

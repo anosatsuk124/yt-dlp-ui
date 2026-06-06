@@ -1,5 +1,8 @@
 //! Headless check of the reverse proxy without opening a window.
-//! Usage: proxy_smoke <socket-path> [request-path]
+//! Run with: cargo run --example proxy_smoke -- <socket-path> [request-path]
+//!
+//! Kept as an example (not a bin) so the Tauri bundler only ever sees the one
+//! application binary.
 
 use std::env;
 

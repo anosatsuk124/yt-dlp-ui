@@ -9,6 +9,8 @@
     "shell:default",
     "notification:default",
     "dialog:default",
-    "opener:default"
+    "opener:default",
+    "updater:default",
+    "process:default"
   ]
 }

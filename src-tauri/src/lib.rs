@@ -11,6 +11,7 @@ pub mod proxy;
 mod sockets;
 mod supervisor;
 mod transport;
+mod updater;
 
 pub fn run() {
     let sockets = sockets::SocketPaths::new();
@@ -21,6 +22,8 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // Reverse-proxy every webview request to the Next.js sidecar. Buffered
         // responses; /api/ws is rejected (desktop uses Tauri events).
         .register_asynchronous_uri_scheme_protocol("app", move |_ctx, request, responder| {
@@ -36,6 +39,7 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             supervisor::start(&handle, &sockets)?;
+            updater::check_in_background(handle);
             Ok(())
         })
         .build(tauri::generate_context!())

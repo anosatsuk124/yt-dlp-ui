@@ -9,8 +9,31 @@ use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
 use tauri::{AppHandle, Emitter};
+use tauri_plugin_notification::NotificationExt;
 
 use crate::transport;
+
+// Fire a native notification when a job completes.
+fn maybe_notify(app: &AppHandle, ev: &serde_json::Value) {
+    if ev.get("type").and_then(|v| v.as_str()) != Some("status") {
+        return;
+    }
+    if ev.get("status").and_then(|v| v.as_str()) != Some("completed") {
+        return;
+    }
+    let name = ev
+        .get("filePath")
+        .and_then(|v| v.as_str())
+        .and_then(|p| std::path::Path::new(p).file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "download".to_string());
+    let _ = app
+        .notification()
+        .builder()
+        .title("Download complete")
+        .body(name)
+        .show();
+}
 
 pub const EVENT_NAME: &str = "downloader-event";
 
@@ -66,6 +89,7 @@ async fn stream_once(app: &AppHandle, socket: &str) -> Result<(), String> {
                     continue;
                 }
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(payload) {
+                    maybe_notify(app, &json);
                     let _ = app.emit(EVENT_NAME, json);
                 }
             }
