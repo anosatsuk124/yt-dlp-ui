@@ -14,6 +14,15 @@ mod transport;
 mod updater;
 
 pub fn run() {
+    // WebKitGTK's DMABUF renderer crashes on a number of Wayland
+    // compositors / GPU drivers with "Gdk-Message: Error 71 (Protocol error)
+    // dispatching to Wayland display". Fall back to the stable renderer unless
+    // the user has explicitly chosen a value. Must be set before GTK init.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+
     let sockets = sockets::SocketPaths::new();
     let next_sock = sockets.web.clone();
 
