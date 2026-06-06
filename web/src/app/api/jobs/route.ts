@@ -57,6 +57,12 @@ interface Combo {
   playlistTitle: string | null;
   // Pre-resolved title from the playlist entry (UI hint while queued).
   seedTitle: string | null;
+  // Cookies/auth resolved from the *submitted* URL, carried through to every
+  // entry. Flat-playlist entry URLs can be bare IDs that resolveCookiesFile /
+  // resolveAuthBinding can't match, so deriving per-entry would drop the
+  // credentials that made enumeration succeed for a private playlist.
+  cookiesFile: string | null;
+  auth: AuthOptions | null;
 }
 
 function comboKey(url: string, format: string, container: string): string {
@@ -151,7 +157,13 @@ export async function POST(req: Request) {
   // download every entry into one job and the one-file-per-job pipeline (single
   // path/hash/MEGA upload) would silently drop all but one file. Such URLs are
   // reported as failures instead.
-  interface Target { url: string; playlistTitle: string | null; seedTitle: string | null }
+  interface Target {
+    url: string;
+    playlistTitle: string | null;
+    seedTitle: string | null;
+    cookiesFile: string | null;
+    auth: AuthOptions | null;
+  }
   const targets: Target[] = [];
   const resolveFailures: { url: string; error: string }[] = [];
   for (const url of urls) {
@@ -179,11 +191,11 @@ export async function POST(req: Request) {
       for (const entry of resolved.entries) {
         const entryUrl = entry.url?.trim();
         if (!entryUrl) continue;
-        targets.push({ url: entryUrl, playlistTitle, seedTitle: entry.title?.trim() || null });
+        targets.push({ url: entryUrl, playlistTitle, seedTitle: entry.title?.trim() || null, cookiesFile, auth });
       }
     } else if (resolved && !resolved.isPlaylist) {
       // Confirmed single video → safe to enqueue the URL directly.
-      targets.push({ url, playlistTitle: null, seedTitle: null });
+      targets.push({ url, playlistTitle: null, seedTitle: null, cookiesFile, auth });
     } else {
       // resolve threw (downloader/extractor error) — can't tell whether this is
       // a playlist, so don't risk a multi-file single job.
@@ -213,6 +225,8 @@ export async function POST(req: Request) {
         kind: p.kind,
         playlistTitle: t.playlistTitle,
         seedTitle: t.seedTitle,
+        cookiesFile: t.cookiesFile,
+        auth: t.auth,
         existing,
       });
     }
@@ -274,9 +288,12 @@ export async function POST(req: Request) {
     }
 
     const id = uuid();
-    const cookiesFile = resolveCookiesFile(c.url);
-    const binding = resolveAuthBinding(c.url);
-    const auth = mergeAuth(binding, authOverride);
+    // Cookies/auth were resolved from the submitted URL and carried on the
+    // combo — reuse them so a private playlist's entries download with the same
+    // credentials that enumerated them (rather than re-deriving from a flat
+    // entry URL, which can be a bare ID that matches no binding).
+    const cookiesFile = c.cookiesFile;
+    const auth = c.auth;
 
     insertJob({
       id,

@@ -61,6 +61,10 @@ Request:
   response's `failed[]` (not enqueued), because a pure playlist URL run as one
   job would download multiple files that the one-file-per-job pipeline can't
   track. If every submitted URL fails to resolve the request returns **502**.
+  Each entry job inherits the cookies/auth resolved from the *submitted*
+  playlist URL, so a private playlist's entries download with the same
+  credentials that enumerated them (flat entry URLs can be bare IDs that match
+  no per-domain binding on their own).
 - `selections` (required): non-empty array of `{ format, containers[] }`. The
   request expands to one job per `url × format × container`. `format` is one of
   `"best" | "1080p" | "720p" | "audio-best"`. For video formats `containers`
