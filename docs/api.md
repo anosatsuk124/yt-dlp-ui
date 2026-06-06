@@ -50,7 +50,14 @@ Request:
 }
 ```
 
-- `urls` (required): non-empty array. Each must match `^https?://`.
+- `urls` (required): non-empty array. Each must match `^https?://`. A playlist
+  URL (YouTube playlist, AbemaTV series, …) is detected up front via the
+  downloader's `POST /resolve` and expanded into one entry URL per video, so the
+  request fans out to one job per `entry × format × container` rather than
+  downloading only the first video. Each resulting job is tagged with the
+  playlist title, which routes its MEGA upload to `playlists/<title>/` (see
+  `POST /resolve`). If resolution fails (extractor error, downloader
+  unreachable) the URL is enqueued as a single download.
 - `selections` (required): non-empty array of `{ format, containers[] }`. The
   request expands to one job per `url × format × container`. `format` is one of
   `"best" | "1080p" | "720p" | "audio-best"`. For video formats `containers`
@@ -487,6 +494,41 @@ replaced by `"***"`, so service logs never contain plaintext secrets. Response:
 ```
 
 `HTTP 202 Accepted`. `409 Conflict` if the ID already exists in the registry.
+
+Every job runs with `--no-playlist`: each job is one concrete video (the web
+side enumerates playlists via `POST /resolve` up front), so a stray
+playlist/`&list=` URL can never fan out into many files under a single job and
+break the one-file-per-job pipeline (title probe → FINAL_PROBE → hash → MEGA).
+
+### `POST /resolve` — enumerate a (possibly playlist) URL
+
+```json
+{
+  "url": "https://www.youtube.com/playlist?list=…",
+  "cookiesFile": "/cookies/example.com.txt",
+  "username": "me",
+  "password": "secret"
+}
+```
+
+Runs `yt-dlp --flat-playlist --dump-single-json` with the same cookies/auth
+fields a job carries (all optional besides `url`). Used by the web side before
+enqueueing to decide whether to fan a URL out into per-video jobs. Response:
+
+```json
+{
+  "isPlaylist": true,
+  "playlistTitle": "My Playlist",
+  "entries": [
+    { "url": "https://www.youtube.com/watch?v=…", "id": "…", "title": "Video 1" }
+  ]
+}
+```
+
+`isPlaylist` is `false` (with no `entries`) for a plain single-video URL. The
+cookie jar is copied to a writable per-request temp (the `/cookies` mount is
+read-only). `502 Bad Gateway` if `yt-dlp` errors or its output can't be parsed;
+the caller treats that as "not a playlist" and enqueues the URL as-is.
 
 ### `DELETE /jobs/:id` — cancel
 

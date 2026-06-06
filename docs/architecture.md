@@ -122,7 +122,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   mega_speed       TEXT,
   content_hash     TEXT,   -- sha256 of the finished file
   save_as          TEXT,   -- custom output name (save-as conflict resolution)
-  mega_remote_name TEXT    -- basename uploaded to MEGA (for overwrite delete)
+  mega_remote_name TEXT,   -- basename uploaded to MEGA (for overwrite delete)
+  playlist_title   TEXT    -- set for playlist entries; routes MEGA to playlists/<title>/
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status   ON jobs(status);
@@ -184,7 +185,10 @@ that:
 2. A single sequential worker drains the queue. The first item triggers a
    MEGA login (`new Storage({ email, password })`), the destination folder
    path is walked/created (`mkdir` per segment), and each subsequent queue
-   item reuses that connection until empty.
+   item reuses that connection until empty. The destination is the configured
+   folder for video, its `<audio>` subfolder for audio-only, or
+   `<folder>/playlists/<playlist title>/` when the job came from an expanded
+   playlist (audio and video alike, so the playlist stays together).
 3. On success: `mega_status='uploaded'`, `mega_uploaded_at=now`, then the
    local file at `file_path` is `unlink`ed. On failure: `mega_status='failed'`,
    `mega_error=<message>`, the local file is **not** touched.
