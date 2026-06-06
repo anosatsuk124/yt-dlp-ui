@@ -143,6 +143,8 @@ export function useJobsWs(): { connected: boolean; jobs: JobRow[] } {
                 save_as: null,
                 mega_remote_name: null,
                 playlist_title: null,
+                season: null,
+                season_number: null,
               });
             }
             flush();
