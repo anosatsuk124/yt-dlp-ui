@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   mega_speed       TEXT,
   content_hash     TEXT,
   save_as          TEXT,
-  mega_remote_name TEXT
+  mega_remote_name TEXT,
+  playlist_title   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status   ON jobs(status);

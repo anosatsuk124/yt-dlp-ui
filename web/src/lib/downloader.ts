@@ -34,6 +34,42 @@ export async function postJob(payload: EnqueuePayload): Promise<void> {
   }
 }
 
+// One entry of an enumerated playlist (a concrete, single-video URL).
+export interface ResolveEntry {
+  url: string;
+  id?: string;
+  title?: string;
+}
+
+export interface ResolveResult {
+  isPlaylist: boolean;
+  playlistTitle?: string;
+  entries?: ResolveEntry[];
+}
+
+// Ask the downloader whether a URL is a playlist and, if so, enumerate its
+// entries (it has yt-dlp; the web container does not). Carries the same
+// cookies/auth a download would so private playlists resolve. Throws on a
+// downloader/extractor error so the caller can fall back to a single job.
+export async function resolvePlaylist(payload: {
+  url: string;
+  cookiesFile?: string;
+  auth?: AuthOptions;
+}): Promise<ResolveResult> {
+  const { auth, ...rest } = payload;
+  const body = { ...rest, ...(auth ?? {}) };
+  const res = await fetch(`${DOWNLOADER_URL}/resolve`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`downloader POST /resolve ${res.status}: ${txt}`);
+  }
+  return (await res.json()) as ResolveResult;
+}
+
 export async function cancelJob(id: string): Promise<void> {
   const res = await fetch(`${DOWNLOADER_URL}/jobs/${encodeURIComponent(id)}`, {
     method: "DELETE",

@@ -33,6 +33,9 @@ export interface JobRow {
   content_hash: string | null;
   save_as: string | null;
   mega_remote_name: string | null;
+  // When this job is one entry of an enumerated playlist, the playlist's title.
+  // Drives the MEGA destination (playlists/<title>/). NULL for standalone jobs.
+  playlist_title: string | null;
 }
 
 let _db: Database.Database | null = null;
@@ -74,6 +77,7 @@ function migrate(conn: Database.Database): void {
   if (!cols.has("content_hash"))     conn.exec("ALTER TABLE jobs ADD COLUMN content_hash TEXT");
   if (!cols.has("save_as"))          conn.exec("ALTER TABLE jobs ADD COLUMN save_as TEXT");
   if (!cols.has("mega_remote_name")) conn.exec("ALTER TABLE jobs ADD COLUMN mega_remote_name TEXT");
+  if (!cols.has("playlist_title"))   conn.exec("ALTER TABLE jobs ADD COLUMN playlist_title TEXT");
 
   // Identity index for the pre-download conflict check (same url+format+container).
   conn.exec("CREATE INDEX IF NOT EXISTS idx_jobs_identity ON jobs(url, format, container)");
@@ -113,11 +117,17 @@ export function insertJob(row: {
   status: JobStatus;
   created_at: number;
   save_as?: string | null;
+  // Pre-seeded video title (e.g. a playlist entry's title), so the UI shows a
+  // real name while queued instead of the raw URL. yt-dlp's later before_dl
+  // probe leaves it alone (updateJobTitle only fills a NULL/empty title).
+  title?: string | null;
+  // Set when this job is one entry of an enumerated playlist.
+  playlist_title?: string | null;
 }): void {
   db().prepare(`
-    INSERT INTO jobs (id, url, format, container, compat, extra_args, cookies_file, status, created_at, save_as)
-    VALUES (@id, @url, @format, @container, @compat, @extra_args, @cookies_file, @status, @created_at, @save_as)
-  `).run({ save_as: null, ...row });
+    INSERT INTO jobs (id, url, format, container, compat, extra_args, cookies_file, status, created_at, save_as, title, playlist_title)
+    VALUES (@id, @url, @format, @container, @compat, @extra_args, @cookies_file, @status, @created_at, @save_as, @title, @playlist_title)
+  `).run({ save_as: null, title: null, playlist_title: null, ...row });
 }
 
 export function getJob(id: string): JobRow | undefined {

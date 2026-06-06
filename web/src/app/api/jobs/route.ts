@@ -13,7 +13,7 @@ import { isFormatKey, formatKind, type FormatKey } from "@/lib/formats";
 import { isContainerValidFor, type ContainerKey } from "@/lib/containers";
 import { isCompatKey, type CompatKey } from "@/lib/compat";
 import { resolveCookiesFile } from "@/lib/cookies";
-import { postJob, shellSplit } from "@/lib/downloader";
+import { postJob, shellSplit, resolvePlaylist, type ResolveResult } from "@/lib/downloader";
 import { deleteCompletedEntry } from "@/lib/cleanup";
 import { deleteRemoteForJob } from "@/lib/mega-uploader";
 import {
@@ -53,6 +53,10 @@ interface Combo {
   format: FormatKey;
   container: ContainerKey;
   kind: "video" | "audio";
+  // Set when this target came from expanding a playlist URL.
+  playlistTitle: string | null;
+  // Pre-resolved title from the playlist entry (UI hint while queued).
+  seedTitle: string | null;
 }
 
 function comboKey(url: string, format: string, container: string): string {
@@ -135,13 +139,56 @@ export async function POST(req: Request) {
     authOverride[k] = resolved;
   }
 
-  // Build the full combo list across urls × pairs and look up existing
+  // Expand any playlist URL into its individual video URLs up front — the
+  // downloader has yt-dlp, the web container doesn't, so we ask it to
+  // enumerate. Each entry becomes its own job tagged with the playlist title
+  // (drives the MEGA destination playlists/<title>/). A resolve failure
+  // (extractor error, downloader unreachable) degrades to treating the URL as
+  // a single download; the downloader's --no-playlist guard then keeps it to
+  // one video instead of silently dumping the whole list into one job.
+  interface Target { url: string; playlistTitle: string | null; seedTitle: string | null }
+  const targets: Target[] = [];
+  for (const url of urls) {
+    const cookiesFile = resolveCookiesFile(url);
+    const binding = resolveAuthBinding(url);
+    const auth = mergeAuth(binding, authOverride);
+    let resolved: ResolveResult | null = null;
+    try {
+      resolved = await resolvePlaylist({
+        url,
+        cookiesFile: cookiesFile ?? undefined,
+        auth: auth && hasAny(auth) ? auth : undefined,
+      });
+    } catch (e) {
+      console.error(`[resolve] ${url}:`, (e as Error).message);
+    }
+    if (resolved?.isPlaylist && resolved.entries && resolved.entries.length > 0) {
+      const playlistTitle = resolved.playlistTitle?.trim() || "playlist";
+      for (const entry of resolved.entries) {
+        const entryUrl = entry.url?.trim();
+        if (!entryUrl) continue;
+        targets.push({ url: entryUrl, playlistTitle, seedTitle: entry.title?.trim() || null });
+      }
+    } else {
+      targets.push({ url, playlistTitle: null, seedTitle: null });
+    }
+  }
+
+  // Build the full combo list across targets × pairs and look up existing
   // (completed/uploaded) downloads with the same identity.
   const combos: (Combo & { existing?: JobRow })[] = [];
-  for (const url of urls) {
+  for (const t of targets) {
     for (const p of pairs) {
-      const existing = findExistingByIdentity(url, p.format, p.container);
-      combos.push({ url, format: p.format, container: p.container, kind: p.kind, existing });
+      const existing = findExistingByIdentity(t.url, p.format, p.container);
+      combos.push({
+        url: t.url,
+        format: p.format,
+        container: p.container,
+        kind: p.kind,
+        playlistTitle: t.playlistTitle,
+        seedTitle: t.seedTitle,
+        existing,
+      });
     }
   }
 
@@ -215,6 +262,8 @@ export async function POST(req: Request) {
       status: "queued",
       created_at: now,
       save_as: outputName ?? null,
+      title: c.seedTitle,
+      playlist_title: c.playlistTitle,
     });
 
     // What we hand the downloader: audio sends its codec as the container;
