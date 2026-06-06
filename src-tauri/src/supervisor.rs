@@ -193,7 +193,10 @@ fn resource_subdir(app: &AppHandle, name: &str, marker: &str) -> PathBuf {
             return c.clone();
         }
     }
-    cands.into_iter().next().unwrap_or_else(|| PathBuf::from(name))
+    cands
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 fn exe_dir() -> Option<PathBuf> {
@@ -226,7 +229,11 @@ fn bin_dir(app: &AppHandle) -> PathBuf {
     if let Ok(p) = std::env::var("YTDLPUI_BIN_DIR") {
         return PathBuf::from(p);
     }
-    let marker = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
+    let marker = if cfg!(windows) {
+        "yt-dlp.exe"
+    } else {
+        "yt-dlp"
+    };
     resource_subdir(app, "bin", marker)
 }
 

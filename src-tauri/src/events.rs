@@ -75,7 +75,9 @@ async fn stream_once(app: &AppHandle, socket: &str) -> Result<(), String> {
     let mut buf = String::new();
     while let Some(frame) = body.frame().await {
         let frame = frame.map_err(|e| e.to_string())?;
-        let Ok(data) = frame.into_data() else { continue };
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
         buf.push_str(&String::from_utf8_lossy(&data));
         // SSE frames are separated by a blank line.
         while let Some(idx) = buf.find("\n\n") {
