@@ -1,8 +1,13 @@
 # Override that joins the stack to a Tailscale tailnet and exposes the
 # web UI only inside the tailnet (Funnel is explicitly disabled).
 #
+# Both web and downloader share the Tailscale container's network namespace, so
+# the downloader's yt-dlp traffic (and the web container's egress, incl. MEGA)
+# can be routed through a Tailscale exit node when TS_EXIT_NODE is set. web and
+# downloader then talk to each other over loopback, which is not exit-routed.
+#
 # Usage:
-#   cp .env.example .env  # then set TS_AUTHKEY and (optionally) TS_HOSTNAME
+#   cp .env.example .env  # set TS_AUTHKEY, optionally TS_HOSTNAME / TS_EXIT_NODE
 #   docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d --build
 
 services:
@@ -13,7 +18,9 @@ services:
       TS_AUTHKEY: ${TS_AUTHKEY:?TS_AUTHKEY must be set}
       TS_HOSTNAME: ${TS_HOSTNAME:-yt-dlp-ui}
       TS_STATE_DIR: /var/lib/tailscale
-      TS_EXTRA_ARGS: --ssh
+      # --exit-node is appended only when TS_EXIT_NODE is set (IP or MagicDNS
+      # name of an approved exit node); empty → no exit node (default routing).
+      TS_EXTRA_ARGS: --ssh ${TS_EXIT_NODE:+--exit-node=${TS_EXIT_NODE} --exit-node-allow-lan-access}
       TS_SERVE_CONFIG: /config/serve.json
     volumes:
       - ./tailscale-state:/var/lib/tailscale
@@ -26,13 +33,24 @@ services:
 
   # Pin the web service to the tailscale container's network namespace so
   # it is reachable as ${TS_HOSTNAME}.<tailnet>.ts.net (and ONLY there —
-  # the host port published by the base compose is reset below).
+  # the host port published by the base compose is reset below). The downloader
+  # shares the same namespace, so reach it over loopback instead of the bridge
+  # service name.
   web:
     network_mode: service:tailscale
     ports: !reset []
+    environment:
+      DOWNLOADER_URL: http://127.0.0.1:8080
     depends_on:
       - downloader
       - tailscale
 
-  # The downloader stays on the default bridge network — only `web`
-  # needs to be on the tailnet. `web` reaches it via the service name.
+  # Put the downloader on the tailnet namespace too so its yt-dlp egress routes
+  # through the exit node (when set). It keeps its volume mounts; it no longer
+  # has its own bridge identity, so nothing else can reach it by service name —
+  # only `web`, over loopback, which is all that talks to it.
+  downloader:
+    network_mode: service:tailscale
+    ports: !reset []
+    depends_on:
+      - tailscale

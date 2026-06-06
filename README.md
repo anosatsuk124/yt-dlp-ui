@@ -90,6 +90,7 @@ and are not exposed here.
 | `WEB_PORT` | `3000` | Host port the web UI is published on. Ignored under the Tailscale override (the UI is reachable only via the tailnet there). |
 | `TS_AUTHKEY` | *(empty)* | Tailscale pre-auth key. Required only for the Tailscale override. |
 | `TS_HOSTNAME` | `yt-dlp-ui` | Hostname the Tailscale sidecar registers in your tailnet. |
+| `TS_EXIT_NODE` | *(empty)* | Tailscale override only. IP or MagicDNS name of an approved exit node to route the stack's egress (yt-dlp downloads + web traffic) through. Empty = default routing. |
 
 ## Optional: Tailscale sidecar
 
@@ -110,9 +111,12 @@ false` in `tailscale/serve.json`) — there is no public-internet exposure.
 docker compose -f docker-compose.yml -f docker-compose.tailscale.yml up -d --build
 ```
 
-The `web` container joins the Tailscale container's network namespace; the
-`downloader` stays on the bridge network and is reached via the `downloader`
-service name.
+Both the `web` and `downloader` containers join the Tailscale container's
+network namespace and talk to each other over loopback. That lets the
+downloader's `yt-dlp` egress (and the web container's traffic, including MEGA
+uploads) route through a Tailscale **exit node**: set `TS_EXIT_NODE` in `.env`
+to an approved exit node's IP or MagicDNS name. Leave it empty for default
+routing. Loopback traffic between `web` and `downloader` is never exit-routed.
 
 ## Cookies
 
