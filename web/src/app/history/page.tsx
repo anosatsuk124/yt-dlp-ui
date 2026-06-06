@@ -20,6 +20,39 @@ const PAGE_SIZE = 50;
 const IDLE_REFRESH_MS = 30_000;
 const ACTIVE_REFRESH_MS = 2_000;
 
+// On desktop (Tauri) the finished file is already on local disk, so reveal it in
+// the OS file manager via the opener plugin instead of streaming it back through
+// the app:// proxy (which buffers the whole response). In the browser (Docker)
+// it stays a normal download link.
+function FileAction({ file, path }: { file: string; path: string | null }) {
+  const cls = "text-primary underline-offset-2 hover:underline";
+  const tauri =
+    typeof window !== "undefined"
+      ? (window as unknown as {
+          __TAURI__?: { core?: { invoke?: (cmd: string, args?: unknown) => Promise<unknown> } };
+        }).__TAURI__
+      : undefined;
+  const invoke = tauri?.core?.invoke;
+  if (invoke && path) {
+    return (
+      <button
+        type="button"
+        className={cls}
+        onClick={() => {
+          void invoke("plugin:opener|reveal_item_in_dir", { paths: [path] });
+        }}
+      >
+        Show in folder
+      </button>
+    );
+  }
+  return (
+    <a href={`/api/files/${encodeURIComponent(file)}`} className={cls}>
+      Download
+    </a>
+  );
+}
+
 export default function Page() {
   const [jobs, setJobs] = useState<JobRow[]>([]);
   const [total, setTotal] = useState(0);
@@ -242,15 +275,7 @@ function ActionCell({
   const parts: React.ReactNode[] = [];
 
   if (file) {
-    parts.push(
-      <a
-        key="dl"
-        href={`/api/files/${encodeURIComponent(file)}`}
-        className="text-primary underline-offset-2 hover:underline"
-      >
-        Download
-      </a>,
-    );
+    parts.push(<FileAction key="dl" file={file} path={job.file_path} />);
   }
 
   // MEGA status / actions.
