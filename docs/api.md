@@ -172,6 +172,14 @@ Source: `web/src/app/api/history/route.ts`. Pagination defaults: `limit=50`,
 }
 ```
 
+Each row carries an extra `local_present` boolean (computed server-side via
+`fs.existsSync(file_path)`) so the UI knows whether the file is still on disk —
+`file_path` alone survives a MEGA upload that deleted the file. A keep-local
+upload leaves `local_present: true` on an `mega_status: "uploaded"` row, so the
+file stays downloadable and can be removed with `DELETE
+/api/history/:id?localOnly=1` (unlinks the local copy only; the row and the
+MEGA copy are kept).
+
 Example:
 
 ```

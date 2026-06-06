@@ -229,6 +229,11 @@ checkbox (shown when MEGA is enabled). It defaults to the global setting and
 applies to every URL in that batch, so you can keep just one download on disk
 while the rest are deleted after upload (or vice-versa).
 
+A kept local copy stays manageable from the History page: an uploaded row that
+still has its file shows the usual **Download** / **Show in folder** link plus a
+**Delete local** action that removes the on-disk copy (reclaiming the space)
+while leaving the file on MEGA.
+
 When you **Overwrite** an existing download, the old MEGA file is deleted
 (by name, permanently) before the replacement is re-uploaded. If that remote
 delete fails it is logged and the upload still proceeds, so a stale duplicate
