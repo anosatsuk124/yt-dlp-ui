@@ -73,15 +73,17 @@ type Job struct {
 // JobState is the in-memory record kept for each job we have seen.
 type JobState struct {
 	Job
-	Status    JobStatus `json:"status"`
-	Progress  float64   `json:"progress"`
-	Speed     string    `json:"speed,omitempty"`
-	ETA       string    `json:"eta,omitempty"`
-	FilePath  string    `json:"filePath,omitempty"`
-	Title     string    `json:"title,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	StartedAt time.Time `json:"startedAt,omitempty"`
-	EndedAt   time.Time `json:"endedAt,omitempty"`
+	Status       JobStatus `json:"status"`
+	Progress     float64   `json:"progress"`
+	Speed        string    `json:"speed,omitempty"`
+	ETA          string    `json:"eta,omitempty"`
+	FilePath     string    `json:"filePath,omitempty"`
+	Title        string    `json:"title,omitempty"`
+	Season       string    `json:"season,omitempty"`
+	SeasonNumber string    `json:"seasonNumber,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	StartedAt    time.Time `json:"startedAt,omitempty"`
+	EndedAt      time.Time `json:"endedAt,omitempty"`
 }
 
 // MarshalJSON wipes the password-bearing fields before encoding so the
@@ -104,17 +106,19 @@ func (s JobState) MarshalJSON() ([]byte, error) {
 // Event is the SSE payload shape. Fields are optional; only those populated
 // for the event type are serialized.
 type Event struct {
-	Type       string    `json:"type"`
-	ID         string    `json:"id"`
-	Status     JobStatus `json:"status,omitempty"`
-	Progress   float64   `json:"progress,omitempty"`
-	Speed      string    `json:"speed,omitempty"`
-	ETA        string    `json:"eta,omitempty"`
-	Downloaded int64     `json:"downloaded,omitempty"`
-	Total      int64     `json:"total,omitempty"`
-	FilePath   string    `json:"filePath,omitempty"`
-	Title      string    `json:"title,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Type         string    `json:"type"`
+	ID           string    `json:"id"`
+	Status       JobStatus `json:"status,omitempty"`
+	Progress     float64   `json:"progress,omitempty"`
+	Speed        string    `json:"speed,omitempty"`
+	ETA          string    `json:"eta,omitempty"`
+	Downloaded   int64     `json:"downloaded,omitempty"`
+	Total        int64     `json:"total,omitempty"`
+	FilePath     string    `json:"filePath,omitempty"`
+	Title        string    `json:"title,omitempty"`
+	Season       string    `json:"season,omitempty"`
+	SeasonNumber string    `json:"seasonNumber,omitempty"`
+	Error        string    `json:"error,omitempty"`
 }
 
 // ResolveRequest is the body of POST /resolve. It carries a single URL plus the
@@ -161,6 +165,10 @@ type ResolveResponse struct {
 	Entries       []ResolveEntry `json:"entries,omitempty"`
 	CanonicalURL  string         `json:"canonicalUrl,omitempty"`
 	Title         string         `json:"title,omitempty"`
+	// Season metadata for the single-video case — used by the "regroup seasons"
+	// maintenance task to place an already-uploaded file under its season folder.
+	Season       string `json:"season,omitempty"`
+	SeasonNumber string `json:"seasonNumber,omitempty"`
 }
 
 // authCreds is the shared bundle of yt-dlp credential fields carried by both a
@@ -715,6 +723,36 @@ func (p *Pool) handleStdoutLine(id, line string, errBuf *rollingBuf, filePath *a
 		return
 	}
 
+	// Resolved season, emitted once per format-download by our
+	// `--print before_dl:SEASON_PROBE:%(season_number)s\t%(season)s`. The web
+	// side routes a playlist entry's MEGA upload to playlists/<title>/<season>/.
+	// Like TITLE_PROBE we forward only the first time per job (combo formats
+	// fire before_dl twice).
+	if strings.HasPrefix(line, "SEASON_PROBE:") {
+		rest := strings.TrimPrefix(line, "SEASON_PROBE:")
+		num, name, _ := strings.Cut(rest, "\t")
+		num = strings.TrimSpace(num)
+		name = strings.TrimSpace(name)
+		if name == "" || name == "NA" {
+			return
+		}
+		if num == "NA" {
+			num = ""
+		}
+		emit := false
+		p.registry.update(id, func(s *JobState) {
+			if s.Season == "" {
+				s.Season = name
+				s.SeasonNumber = num
+				emit = true
+			}
+		})
+		if emit {
+			p.bus.publish(Event{Type: "season", ID: id, Season: name, SeasonNumber: num})
+		}
+		return
+	}
+
 	// Resolved output path, also from --print before_dl. Without this the
 	// new yt-dlp + --progress-template combo never prints a
 	// `[download] Destination: …` line and the cleanup-on-cancel path has
@@ -979,6 +1017,11 @@ func buildArgs(j Job, downloadDir string) []string {
 		// before any fragments are downloaded, so the UI can swap "raw URL"
 		// for a real title as soon as it's known.
 		"--print", "before_dl:TITLE_PROBE:%(title)s",
+		// Season metadata, emitted once per format as number<TAB>name. The web
+		// side groups a playlist entry's MEGA upload under
+		// playlists/<title>/<season>/. Both fields are NA on sources without
+		// season info, in which case no season subfolder is used.
+		"--print", "before_dl:SEASON_PROBE:%(season_number)s\t%(season)s",
 		// Same idea for the output path. The new yt-dlp + --progress-template
 		// combo suppresses the standard `[download] Destination: …` line,
 		// which is how we used to capture the filename for cleanup-on-
@@ -1292,11 +1335,13 @@ func buildResolveArgs(r ResolveRequest) []string {
 // single video (IsPlaylist=false, empty Entries).
 func parseResolveOutput(out []byte) (ResolveResponse, error) {
 	var info struct {
-		Type        string `json:"_type"`
-		Title       string `json:"title"`
-		WebpageURL  string `json:"webpage_url"`
-		OriginalURL string `json:"original_url"`
-		Entries     []struct {
+		Type         string `json:"_type"`
+		Title        string `json:"title"`
+		WebpageURL   string `json:"webpage_url"`
+		OriginalURL  string `json:"original_url"`
+		Season       string `json:"season"`
+		SeasonNumber *int   `json:"season_number"`
+		Entries      []struct {
 			URL        string `json:"url"`
 			WebpageURL string `json:"webpage_url"`
 			ID         string `json:"id"`
@@ -1315,7 +1360,21 @@ func parseResolveOutput(out []byte) (ResolveResponse, error) {
 		if canonical == "" {
 			canonical = strings.TrimSpace(info.OriginalURL)
 		}
-		return ResolveResponse{IsPlaylist: false, CanonicalURL: canonical, Title: strings.TrimSpace(info.Title)}, nil
+		season := strings.TrimSpace(info.Season)
+		if season == "NA" {
+			season = ""
+		}
+		seasonNum := ""
+		if info.SeasonNumber != nil {
+			seasonNum = strconv.Itoa(*info.SeasonNumber)
+		}
+		return ResolveResponse{
+			IsPlaylist:   false,
+			CanonicalURL: canonical,
+			Title:        strings.TrimSpace(info.Title),
+			Season:       season,
+			SeasonNumber: seasonNum,
+		}, nil
 	}
 	entries := make([]ResolveEntry, 0, len(info.Entries))
 	for _, e := range info.Entries {

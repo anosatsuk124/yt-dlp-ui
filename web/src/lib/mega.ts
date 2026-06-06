@@ -194,6 +194,19 @@ export class MegaClient {
     await node.rename(newName);
   }
 
+  // Move a remote node into another folder — re-parents the node only, no bytes
+  // are re-uploaded. Used to regroup already-uploaded files into season
+  // subfolders.
+  async moveFile(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    node: any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    destFolderNode: any,
+  ): Promise<void> {
+    if (!this.storage) throw new Error("mega client not connected");
+    await node.moveTo(destFolderNode);
+  }
+
   async disconnect(): Promise<void> {
     if (!this.storage) return;
     try {

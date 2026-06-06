@@ -36,6 +36,10 @@ export interface JobRow {
   // When this job is one entry of an enumerated playlist, the playlist's title.
   // Drives the MEGA destination (playlists/<title>/). NULL for standalone jobs.
   playlist_title: string | null;
+  // Season name/number captured at download time (sources that expose them).
+  // For a playlist job, routes the MEGA upload to playlists/<title>/<season>/.
+  season: string | null;
+  season_number: number | null;
 }
 
 let _db: Database.Database | null = null;
@@ -78,6 +82,8 @@ function migrate(conn: Database.Database): void {
   if (!cols.has("save_as"))          conn.exec("ALTER TABLE jobs ADD COLUMN save_as TEXT");
   if (!cols.has("mega_remote_name")) conn.exec("ALTER TABLE jobs ADD COLUMN mega_remote_name TEXT");
   if (!cols.has("playlist_title"))   conn.exec("ALTER TABLE jobs ADD COLUMN playlist_title TEXT");
+  if (!cols.has("season"))           conn.exec("ALTER TABLE jobs ADD COLUMN season TEXT");
+  if (!cols.has("season_number"))    conn.exec("ALTER TABLE jobs ADD COLUMN season_number INTEGER");
 
   // Identity index for the pre-download conflict check (same url+format+container).
   conn.exec("CREATE INDEX IF NOT EXISTS idx_jobs_identity ON jobs(url, format, container)");
@@ -183,6 +189,16 @@ export function updateJobTitle(id: string, title: string): void {
   `).run(title, id);
 }
 
+// Record the resolved season for a job. Like updateJobTitle, the first
+// non-empty value wins (combo formats fire the before_dl probe twice). Called
+// from the SSE consumer on a "season" event and from the regroup maintenance
+// task.
+export function updateJobSeason(id: string, season: string, seasonNumber: number | null): void {
+  db().prepare(`
+    UPDATE jobs SET season = ?, season_number = ? WHERE id = ? AND (season IS NULL OR season = '')
+  `).run(season, seasonNumber, id);
+}
+
 export function deleteJob(id: string): void {
   db().prepare("DELETE FROM jobs WHERE id = ?").run(id);
 }
@@ -211,6 +227,20 @@ export function findExistingByIdentity(
     ORDER BY COALESCE(finished_at, created_at) DESC
     LIMIT 1
   `).get({ url, format, container: container ?? "" }) as JobRow | undefined;
+}
+
+// Uploaded playlist entries that have no season recorded yet — the
+// regroup-seasons maintenance task resolves each one's season and moves the
+// MEGA copy into a playlists/<title>/<season>/ subfolder.
+export function listUploadedPlaylistJobsWithoutSeason(): JobRow[] {
+  return db().prepare(`
+    SELECT * FROM jobs
+    WHERE mega_status = 'uploaded'
+      AND mega_remote_name IS NOT NULL AND mega_remote_name != ''
+      AND playlist_title IS NOT NULL AND playlist_title != ''
+      AND (season IS NULL OR season = '')
+    ORDER BY COALESCE(finished_at, created_at) DESC
+  `).all() as JobRow[];
 }
 
 // Completed/uploaded jobs that have no content hash yet — the backfill-hash

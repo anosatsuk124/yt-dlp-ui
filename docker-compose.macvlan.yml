@@ -1,0 +1,28 @@
+# Optional override (add AFTER docker-compose.tailscale.yml): attach the
+# tailscale container to an existing external macvlan network so it shares an
+# L2 segment with another tailnet node — e.g. a self-hosted exit node running on
+# the same host but on a different Docker network. Without a shared segment two
+# such nodes can't hole-punch (different Docker nets behind the same NAT) and
+# fall back to a slow DERP relay; sharing the macvlan gives a DIRECT connection.
+#
+# All site-specific values live in .env (kept out of git):
+#   TS_MACVLAN_NETWORK = name of the existing (external) macvlan network
+#   TS_MACVLAN_IP      = a free static IP for this container on that subnet
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.tailscale.yml \
+#     -f docker-compose.macvlan.yml up -d
+services:
+  tailscale:
+    networks:
+      # Keep the project's default bridge (multi-homed) and add the macvlan, so
+      # the macvlan address becomes an extra direct-connection endpoint without
+      # disturbing the existing egress path.
+      default: {}
+      tsmacvlan:
+        ipv4_address: ${TS_MACVLAN_IP:?TS_MACVLAN_IP is required for the macvlan override}
+
+networks:
+  tsmacvlan:
+    external: true
+    name: ${TS_MACVLAN_NETWORK:?TS_MACVLAN_NETWORK is required for the macvlan override}

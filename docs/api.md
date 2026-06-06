@@ -444,6 +444,7 @@ are emitted thereafter:
 { "type": "status",   "id": "f1a4…", "status": "completed", "filePath": "/downloads/best/mp4/Sample [dQw4w9WgXcQ].mp4" }
 { "type": "status",   "id": "f1a4…", "status": "failed", "error": "HTTP Error 403: Forbidden" }
 { "type": "title",    "id": "f1a4…", "title": "Sample video" }
+{ "type": "season",   "id": "f1a4…", "season": "Season name", "seasonNumber": "2" }
 ```
 
 The browser hook drops a job from its active map as soon as it receives a
@@ -542,12 +543,14 @@ For a plain single-video URL, `isPlaylist` is `false` with no `entries`;
 `canonicalUrl` carries yt-dlp's resolved `webpage_url` (and `title` the video
 title) so the caller can enqueue the real page instead of an opaque short link
 (e.g. `abema.go.link/…` → `abema.tv/video/episode/…`) — important for per-domain
-cookie/auth matching and identity de-dup. The cookie jar is copied to a writable
-per-request temp (the `/cookies` mount is read-only). `502 Bad Gateway` if
-`yt-dlp` errors or its output can't be parsed.
+cookie/auth matching and identity de-dup. It also returns `season`/`seasonNumber`
+when the source exposes them (used by the regroup-seasons maintenance task). The
+cookie jar is copied to a writable per-request temp (the `/cookies` mount is
+read-only). `502 Bad Gateway` if `yt-dlp` errors or its output can't be parsed.
 
 ```json
-{ "isPlaylist": false, "canonicalUrl": "https://abema.tv/video/episode/…", "title": "Episode 1" }
+{ "isPlaylist": false, "canonicalUrl": "https://abema.tv/video/episode/…",
+  "title": "Episode 1", "season": "Season name", "seasonNumber": "2" }
 ```
 
 ### `DELETE /jobs/:id` — cancel

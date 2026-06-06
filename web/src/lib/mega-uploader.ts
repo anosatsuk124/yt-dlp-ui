@@ -47,15 +47,21 @@ function sanitizeMegaSegment(name: string): string {
 }
 
 // Pick the MEGA destination path for a job:
-//   - playlist entries → <baseFolder>/playlists/<playlist title>/ (audio and
-//     video alike, so a playlist stays together in one place);
+//   - playlist entries → <baseFolder>/playlists/<playlist title>/, plus a
+//     /<season>/ level when the job carries season metadata (audio and video
+//     alike, so a playlist/season stays together in one place);
 //   - audio-only       → the configured audio subfolder;
 //   - everything else  → the main folder.
-function targetFolderPath(job: JobRow): string {
+export function targetFolderPath(job: JobRow): string {
   const cfg = loadMegaConfig();
   if (job.playlist_title && job.playlist_title.trim()) {
     const base = cfg.folder.replace(/\/+$/, "");
-    return `${base}/playlists/${sanitizeMegaSegment(job.playlist_title)}`;
+    let dir = `${base}/playlists/${sanitizeMegaSegment(job.playlist_title)}`;
+    const season = job.season?.trim();
+    if (season && season !== "NA") {
+      dir += `/${sanitizeMegaSegment(season)}`;
+    }
+    return dir;
   }
   return formatKind(job.format) === "audio" ? cfg.audioFolder : cfg.folder;
 }
