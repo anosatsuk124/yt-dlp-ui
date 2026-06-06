@@ -229,6 +229,20 @@ export function findExistingByIdentity(
   `).get({ url, format, container: container ?? "" }) as JobRow | undefined;
 }
 
+// Uploaded playlist entries that have no season recorded yet — the
+// regroup-seasons maintenance task resolves each one's season and moves the
+// MEGA copy into a playlists/<title>/<season>/ subfolder.
+export function listUploadedPlaylistJobsWithoutSeason(): JobRow[] {
+  return db().prepare(`
+    SELECT * FROM jobs
+    WHERE mega_status = 'uploaded'
+      AND mega_remote_name IS NOT NULL AND mega_remote_name != ''
+      AND playlist_title IS NOT NULL AND playlist_title != ''
+      AND (season IS NULL OR season = '')
+    ORDER BY COALESCE(finished_at, created_at) DESC
+  `).all() as JobRow[];
+}
+
 // Completed/uploaded jobs that have no content hash yet — the backfill-hash
 // maintenance task re-downloads each to compute it.
 export function listJobsMissingHash(): JobRow[] {

@@ -52,7 +52,7 @@ function sanitizeMegaSegment(name: string): string {
 //     alike, so a playlist/season stays together in one place);
 //   - audio-only       → the configured audio subfolder;
 //   - everything else  → the main folder.
-function targetFolderPath(job: JobRow): string {
+export function targetFolderPath(job: JobRow): string {
   const cfg = loadMegaConfig();
   if (job.playlist_title && job.playlist_title.trim()) {
     const base = cfg.folder.replace(/\/+$/, "");

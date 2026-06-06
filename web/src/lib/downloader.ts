@@ -49,6 +49,9 @@ export interface ResolveResult {
   // caller can enqueue the canonical page instead of an opaque short link.
   canonicalUrl?: string;
   title?: string;
+  // Season metadata for the single-video case (regroup-seasons maintenance).
+  season?: string;
+  seasonNumber?: string;
 }
 
 // Ask the downloader whether a URL is a playlist and, if so, enumerate its
