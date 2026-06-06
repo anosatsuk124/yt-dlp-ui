@@ -29,6 +29,13 @@ rm -rf "$WEB/.next" "$WEB/node_modules"
 cp -r "$ROOT/web/.next" "$WEB/.next"
 cp "$ROOT/web/next.config.mjs" "$ROOT/web/schema.sql" "$ROOT/web/package.json" "$ROOT/web/package-lock.json" "$WEB/"
 ( cd "$WEB" && npm ci --omit=dev )   # production node_modules incl. native better-sqlite3
+# Drop musl-libc native bindings (Next.js SWC, sharp, …) npm pulls in alongside
+# the glibc ones. The AppImage links glibc and never loads them, but linuxdeploy
+# walks every ELF in the AppDir and aborts when it can't resolve their musl libc
+# ("ERROR: Could not find dependency: libc.musl-x86_64.so.1"), failing the build.
+if [ "$OS" = linux ]; then
+  find "$WEB/node_modules" -type d -name '*musl*' -prune -exec rm -rf {} + 2>/dev/null || true
+fi
 
 echo "== [3/5] fetch bundled tools (yt-dlp, ffmpeg, ffprobe, node) =="
 bash "$ROOT/scripts/fetch-tools.sh" "$OS" "$ARCH" "$BIN"
