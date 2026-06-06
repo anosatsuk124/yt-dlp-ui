@@ -13,9 +13,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-22.04,     target: x86_64-unknown-linux-gnu,  fos: linux,   farch: x64 }
+          # Linux ships deb + AppImage (the updater format). rpm is dropped: its
+          # xz pass over the bundled tools took ~45 min per job for little value.
+          - { os: ubuntu-22.04,     target: x86_64-unknown-linux-gnu,  fos: linux,   farch: x64,   extra: "--bundles deb appimage --verbose" }
           # GitHub-hosted arm64 Linux runner (native, so better-sqlite3 builds for arm64).
-          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, fos: linux,   farch: arm64 }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, fos: linux,   farch: arm64, extra: "--bundles deb appimage --verbose" }
           - { os: macos-13,         target: x86_64-apple-darwin,       fos: macos,   farch: x64 }
           - { os: macos-14,         target: aarch64-apple-darwin,      fos: macos,   farch: arm64 }
           - { os: windows-latest,   target: x86_64-pc-windows-msvc,    fos: windows, farch: x64 }
@@ -66,6 +68,10 @@ jobs:
           # the bundle step fails with "failed to run linuxdeploy". Extracting
           # and running instead of mounting avoids the FUSE dependency entirely.
           APPIMAGE_EXTRACT_AND_RUN: "1"
+          # linuxdeploy strips every binary in the AppDir; it aborts on the
+          # prebuilt foreign tools we bundle (node/ffmpeg/yt-dlp), which deb/rpm
+          # never strip. Skip stripping so the AppImage bundles successfully.
+          NO_STRIP: "true"
           # Updater signing key (REQUIRED for the in-app updater; separate from
           # OS code signing). OS signing is intentionally unset for now — the
           # artifacts are unsigned but updater-signed. To enable later, add the
@@ -77,7 +83,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: src-tauri
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} ${{ matrix.extra }}
           tagName: ${{ github.ref_name }}
           releaseName: "yt-dlp-ui ${{ github.ref_name }}"
           releaseDraft: true
