@@ -28,7 +28,11 @@ function shortLabel(job: JobRow): string {
 async function fetchSeason(
   job: JobRow,
 ): Promise<{ season: string; seasonNumber: number | null } | null> {
-  const cookiesFile = resolveCookiesFile(job.url);
+  // Prefer the cookies the job actually downloaded with — a playlist entry may
+  // have been enqueued with fallback cookies from the submitted URL, so
+  // resolving from the entry URL alone can come back empty for an
+  // authenticated source. Fall back to a fresh per-domain lookup.
+  const cookiesFile = job.cookies_file ?? resolveCookiesFile(job.url);
   const auth = resolveAuthBinding(job.url);
   let res;
   try {
