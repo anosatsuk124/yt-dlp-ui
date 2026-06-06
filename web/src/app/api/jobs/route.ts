@@ -45,6 +45,9 @@ interface EnqueueBody {
   auth?: Partial<AuthOptions>;
   resolution?: Resolution;
   saveAsNames?: Record<string, string>;
+  // Per-download override for keeping the local copy after a MEGA upload.
+  // Omitted → the job defers to the global `mega_keep_local` setting.
+  keepLocal?: boolean;
 }
 
 // A single concrete (url, format, container) download target.
@@ -130,6 +133,11 @@ export async function POST(req: Request) {
     catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }); }
   }
 
+  // Per-download keep-local override. An explicit boolean pins the choice for
+  // these jobs (1/0); omitting it stores NULL so the uploader falls back to the
+  // global `mega_keep_local` setting at upload time.
+  const keepLocal = typeof body.keepLocal === "boolean" ? (body.keepLocal ? 1 : 0) : null;
+
   // Per-job auth override (twoFactor allowed; cert refs resolved against /certs).
   const authOverride = sanitizeAuthPatch(body.auth, { allowTwoFactor: true });
   for (const k of ["clientCertFile", "clientCertKeyFile"] as const) {
@@ -185,7 +193,7 @@ export async function POST(req: Request) {
       });
     } catch (e) {
       resolveError = (e as Error).message;
-      console.error(`[resolve] ${url}:`, resolveError);
+      console.error("[resolve]", { url, error: resolveError });
     }
     if (resolved?.isPlaylist && resolved.entries && resolved.entries.length > 0) {
       const playlistTitle = resolved.playlistTitle?.trim() || "playlist";
@@ -314,6 +322,7 @@ export async function POST(req: Request) {
       status: "queued",
       created_at: now,
       save_as: outputName ?? null,
+      mega_keep_local: keepLocal,
       title: c.seedTitle,
       playlist_title: c.playlistTitle,
     });

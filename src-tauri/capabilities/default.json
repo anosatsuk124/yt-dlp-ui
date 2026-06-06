@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capabilities for the main window.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "shell:default",
+    "notification:default",
+    "dialog:default",
+    "opener:default",
+    "updater:default",
+    "process:default"
+  ]
+}

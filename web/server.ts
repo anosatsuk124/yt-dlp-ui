@@ -20,7 +20,8 @@ import {
   reconcileOrphans,
   getSetting,
 } from "./src/lib/db";
-import { DOWNLOADER_URL } from "./src/lib/env";
+import { DOWNLOADER_URL, WEB_SOCKET } from "./src/lib/env";
+import { downloaderFetch } from "./src/lib/transport";
 import { getJobs as getDownloaderJobs, patchConfig } from "./src/lib/downloader";
 import { cleanupFragments, resolveActualFile } from "./src/lib/cleanup";
 import { sha256File, insertHashIntoName, SHORT_HASH_LEN } from "./src/lib/hash";
@@ -163,11 +164,22 @@ async function syncSettings(reason: string) {
     const n = parseInt(raw, 10);
     if (Number.isFinite(n) && n >= 1) {
       try {
-        await patchConfig(n);
+        await patchConfig({ maxParallel: n });
         console.log(`[config/${reason}] set downloader maxParallel=${n}`);
       } catch (e) {
         console.log(`[config/${reason}] failed to set maxParallel:`, (e as Error).message);
       }
+    }
+  }
+  // Desktop-only: re-assert the user-chosen output directory. Empty under
+  // Docker, where the downloader keeps its bind-mounted /downloads.
+  const dir = getSetting("download_dir");
+  if (dir && dir.trim()) {
+    try {
+      await patchConfig({ downloadDir: dir });
+      console.log(`[config/${reason}] set downloader downloadDir=${dir}`);
+    } catch (e) {
+      console.log(`[config/${reason}] failed to set downloadDir:`, (e as Error).message);
     }
   }
   // Re-assert the MEGA uploader pool size against the DB (no-op if already
@@ -208,7 +220,7 @@ async function reconcileNow(reason: string) {
 async function consumeEvents(signal: AbortSignal) {
   while (!signal.aborted) {
     try {
-      const res = await fetch(`${DOWNLOADER_URL}/events`, { signal });
+      const res = await downloaderFetch(`${DOWNLOADER_URL}/events`, { signal });
       if (!res.ok || !res.body) {
         await sleep(2000);
         continue;
@@ -285,9 +297,23 @@ app.prepare().then(() => {
   void consumeEvents(controller.signal);
   startMegaUploader();
 
-  server.listen(port, hostname, () => {
-    console.log(`> ready on http://${hostname}:${port}`);
-  });
+  if (WEB_SOCKET) {
+    // Desktop (Tauri) mode: listen on a Unix domain socket / Windows named pipe
+    // so no TCP port is opened. The Rust proxy is the only client.
+    if (process.platform !== "win32") {
+      try { fs.unlinkSync(WEB_SOCKET); } catch { /* no stale socket to clear */ }
+    }
+    server.listen(WEB_SOCKET, () => {
+      if (process.platform !== "win32") {
+        try { fs.chmodSync(WEB_SOCKET, 0o600); } catch { /* best effort */ }
+      }
+      console.log(`> ready on ${WEB_SOCKET}`);
+    });
+  } else {
+    server.listen(port, hostname, () => {
+      console.log(`> ready on http://${hostname}:${port}`);
+    });
+  }
 
   const shutdown = () => {
     console.log("> shutting down");

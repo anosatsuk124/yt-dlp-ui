@@ -31,6 +31,7 @@ interface MegaSettings {
   audioSubdir: string;
   hasPassword: boolean;
   maxParallel: number;
+  keepLocal: boolean;
 }
 
 const DEFAULT_MEGA: MegaSettings = {
@@ -41,6 +42,7 @@ const DEFAULT_MEGA: MegaSettings = {
   audioSubdir: "audio",
   hasPassword: false,
   maxParallel: 2,
+  keepLocal: false,
 };
 
 // Comparable snapshot of the saved settings — excludes password/hasPassword
@@ -56,6 +58,7 @@ interface SettingsSnapshot {
     folder: string;
     audioSubdir: string;
     maxParallel: number;
+    keepLocal: boolean;
   };
 }
 
@@ -77,6 +80,7 @@ function buildSnapshot(
       folder: mega.folder,
       audioSubdir: mega.audioSubdir,
       maxParallel: mega.maxParallel,
+      keepLocal: mega.keepLocal,
     },
   };
 }
@@ -89,6 +93,8 @@ export default function Page() {
   const [defaultContainer, setDefaultContainer] = useTabState<ContainerKey>(K.defaultContainer, "auto");
   const [defaultCompat, setDefaultCompat] = useTabState<CompatKey>(K.defaultCompat, "auto");
   const [maxParallel, setMaxParallel] = useTabState<number>(K.maxParallel, 2);
+  const [downloadDir, setDownloadDir] = useTabState<string>(K.downloadDir, "");
+  const [isDesktop, setIsDesktop] = useState(false);
   const [mega, setMega] = useTabState<MegaSettings>(K.mega, DEFAULT_MEGA);
   const [baseline, setBaseline] = useTabState<SettingsSnapshot | null>(K.baseline, null);
   const [loading] = useTabState<boolean>(K.loading, true);
@@ -106,7 +112,8 @@ export default function Page() {
         defaultContainer?: string;
         defaultCompat?: string;
         maxParallel?: number;
-        mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string; audioSubdir?: string; maxParallel?: number };
+        downloadDir?: string;
+        mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string; audioSubdir?: string; maxParallel?: number; keepLocal?: boolean };
       }) => {
         const fmt = s.defaultFormat ? normalizeFormatKey(s.defaultFormat) : "best";
         const allowed = containersFor(formatKind(fmt));
@@ -118,6 +125,7 @@ export default function Page() {
         store.set<ContainerKey>(K.defaultContainer, cont);
         if (s.defaultCompat && isCompatKey(s.defaultCompat)) store.set<CompatKey>(K.defaultCompat, s.defaultCompat);
         if (typeof s.maxParallel === "number") store.set<number>(K.maxParallel, s.maxParallel);
+        if (typeof s.downloadDir === "string") store.set<string>(K.downloadDir, s.downloadDir);
         if (s.mega) {
           store.set<MegaSettings>(K.mega, {
             enabled: !!s.mega.enabled,
@@ -127,6 +135,7 @@ export default function Page() {
             audioSubdir: s.mega.audioSubdir ?? "audio",
             hasPassword: !!s.mega.hasPassword,
             maxParallel: typeof s.mega.maxParallel === "number" ? s.mega.maxParallel : 2,
+            keepLocal: !!s.mega.keepLocal,
           });
         }
       })
@@ -148,6 +157,39 @@ export default function Page() {
         store.set<boolean>(K.loading, false);
       });
   });
+
+  // The download-folder picker is desktop-only (needs the native dialog).
+  useEffect(() => {
+    setIsDesktop(!!(window as unknown as { __TAURI__?: unknown }).__TAURI__);
+  }, []);
+
+  // Open the native folder picker and apply the choice immediately (it is
+  // pushed to the downloader and persisted server-side).
+  async function chooseDownloadDir() {
+    const tauri = (window as unknown as {
+      __TAURI__?: { dialog?: { open?: (opts: unknown) => Promise<string | string[] | null> } };
+    }).__TAURI__;
+    if (!tauri?.dialog?.open) return;
+    const picked = await tauri.dialog.open({
+      directory: true,
+      multiple: false,
+      defaultPath: downloadDir || undefined,
+    });
+    if (typeof picked !== "string" || !picked) return;
+    setDownloadDir(picked);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ downloadDir: picked }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
+      toast({ title: "Download folder updated", description: picked });
+    } catch (err) {
+      toast({ title: "Update failed", description: (err as Error).message });
+    }
+  }
 
   // When the format kind changes, keep the container valid for the new kind.
   function onDefaultFormatChange(fmt: FormatKey) {
@@ -199,6 +241,7 @@ export default function Page() {
             folder: mega.folder,
             audioSubdir: mega.audioSubdir,
             maxParallel: mega.maxParallel,
+            keepLocal: mega.keepLocal,
           },
         }),
       });
@@ -231,6 +274,7 @@ export default function Page() {
       folder: baseline.mega.folder,
       audioSubdir: baseline.mega.audioSubdir,
       maxParallel: baseline.mega.maxParallel,
+      keepLocal: baseline.mega.keepLocal,
       password: "",
     }));
   }
@@ -348,13 +392,33 @@ export default function Page() {
                 </p>
               </div>
 
+              {isDesktop && (
+                <div className="space-y-2">
+                  <Label>Download folder</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      readOnly
+                      value={downloadDir || "~/Downloads/yt-dlp-ui (default)"}
+                      className="flex-1"
+                    />
+                    <Button type="button" variant="outline" onClick={chooseDownloadDir}>
+                      Choose…
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Where finished downloads are saved. Applied to the downloader immediately.
+                  </p>
+                </div>
+              )}
+
               <div className="space-y-4 rounded-md border p-4">
                 <div className="flex items-center justify-between">
                   <div>
                     <Label className="text-base">MEGA upload</Label>
                     <p className="text-xs text-muted-foreground">
-                      When enabled, finished downloads are uploaded to MEGA and
-                      the local copy is deleted on success.
+                      When enabled, finished downloads are uploaded to MEGA.
+                      The local copy is deleted on success unless &ldquo;Keep
+                      local copy&rdquo; is on (or pinned per download).
                     </p>
                   </div>
                   <Button
@@ -436,6 +500,25 @@ export default function Page() {
                     takes effect immediately, lowering it kicks in as workers
                     finish their current upload.
                   </p>
+                </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <Label className="text-sm">Keep local copy</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Keep the on-disk file after a successful MEGA upload
+                      instead of deleting it. The per-download toggle in the
+                      queue overrides this default.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={mega.keepLocal ? "default" : "outline"}
+                    onClick={() => setMega(m => ({ ...m, keepLocal: !m.keepLocal }))}
+                  >
+                    {mega.keepLocal ? "Keep" : "Delete"}
+                  </Button>
                 </div>
               </div>
 

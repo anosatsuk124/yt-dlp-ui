@@ -16,6 +16,9 @@ export interface MegaConfig {
   password: string;
   folder: string;       // destination for video downloads
   audioFolder: string;  // destination for audio-only downloads (folder/<audioSubdir>)
+  // Global default: keep the local copy after a successful MEGA upload instead
+  // of deleting it. Per-job overrides (jobs.mega_keep_local) take precedence.
+  keepLocal: boolean;
 }
 
 export const DEFAULT_MEGA_FOLDER = "/yt-dlp-ui";
@@ -39,6 +42,7 @@ export function loadMegaConfig(): MegaConfig {
     password,
     folder,
     audioFolder: joinMegaPath(folder, audioSub),
+    keepLocal: getSetting("mega_keep_local") === "true",
   };
 }
 

@@ -238,11 +238,21 @@ async function processOne(jobId: string, client: MegaClient, workerId: number): 
     );
     setMegaRemoteName(jobId, remoteName);
     markMegaUploaded(jobId, Date.now());
-    try {
-      await fs.promises.unlink(job.file_path);
-      console.log(`[mega/w${workerId}] uploaded ${jobId}; removed local ${job.file_path}`);
-    } catch (e) {
-      console.error(`[mega/w${workerId}] uploaded ${jobId} but local unlink failed:`, (e as Error).message);
+    // Keep the local copy if the job pins it (mega_keep_local = 1) or, when the
+    // job leaves it unset (NULL), if the global `mega_keep_local` setting is on.
+    const keepLocal =
+      job.mega_keep_local != null
+        ? job.mega_keep_local === 1
+        : loadMegaConfig().keepLocal;
+    if (keepLocal) {
+      console.log(`[mega/w${workerId}] uploaded ${jobId}; keeping local ${job.file_path}`);
+    } else {
+      try {
+        await fs.promises.unlink(job.file_path);
+        console.log(`[mega/w${workerId}] uploaded ${jobId}; removed local ${job.file_path}`);
+      } catch (e) {
+        console.error(`[mega/w${workerId}] uploaded ${jobId} but local unlink failed:`, (e as Error).message);
+      }
     }
   } catch (e) {
     const msg = (e as Error).message || String(e);

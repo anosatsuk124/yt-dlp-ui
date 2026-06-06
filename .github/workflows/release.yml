@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04,     target: x86_64-unknown-linux-gnu,  fos: linux,   farch: x64 }
+          # GitHub-hosted arm64 Linux runner (native, so better-sqlite3 builds for arm64).
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, fos: linux,   farch: arm64 }
+          - { os: macos-13,         target: x86_64-apple-darwin,       fos: macos,   farch: x64 }
+          - { os: macos-14,         target: aarch64-apple-darwin,      fos: macos,   farch: arm64 }
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,    fos: windows, farch: x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev \
+            libsoup-3.0-dev libappindicator3-dev patchelf
+
+      # Build the web app, cross-compile the Go downloader, copy node, and fetch
+      # the pinned tools into src-tauri/resources + binaries. Skips the actual
+      # `tauri build` so tauri-action can run + sign + publish it below.
+      - name: Assemble bundle inputs
+        shell: bash
+        env:
+          OS: ${{ matrix.fos }}
+          ARCH: ${{ matrix.farch }}
+          TRIPLE: ${{ matrix.target }}
+          SKIP_TAURI_BUILD: "1"
+        run: bash scripts/build-desktop.sh
+
+      - name: Build, sign (updater) and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          # Required for tauri-action to create/update the GitHub Release and
+          # upload the bundles + latest.json (permissions: contents: write above).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing key (REQUIRED for the in-app updater; separate from
+          # OS code signing). OS signing is intentionally unset for now — the
+          # artifacts are unsigned but updater-signed. To enable later, add the
+          # Apple/Windows secrets below and tauri-action picks them up:
+          #   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY
+          #   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+          #   WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: src-tauri
+          args: --target ${{ matrix.target }}
+          tagName: ${{ github.ref_name }}
+          releaseName: "yt-dlp-ui ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true

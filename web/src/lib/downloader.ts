@@ -1,4 +1,5 @@
 import { DOWNLOADER_URL } from "./env";
+import { downloaderFetch } from "./transport";
 import type { AuthOptions } from "./auth";
 
 export interface EnqueuePayload {
@@ -23,7 +24,7 @@ export async function postJob(payload: EnqueuePayload): Promise<void> {
   // EnqueuePayload above.
   const { auth, ...rest } = payload;
   const body = { ...rest, ...(auth ?? {}) };
-  const res = await fetch(`${DOWNLOADER_URL}/jobs`, {
+  const res = await downloaderFetch(`${DOWNLOADER_URL}/jobs`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -82,7 +83,7 @@ export async function resolvePlaylist(payload: {
 }
 
 export async function cancelJob(id: string): Promise<void> {
-  const res = await fetch(`${DOWNLOADER_URL}/jobs/${encodeURIComponent(id)}`, {
+  const res = await downloaderFetch(`${DOWNLOADER_URL}/jobs/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
   if (!res.ok && res.status !== 404) {
@@ -90,11 +91,16 @@ export async function cancelJob(id: string): Promise<void> {
   }
 }
 
-export async function patchConfig(maxParallel: number): Promise<void> {
-  const res = await fetch(`${DOWNLOADER_URL}/config`, {
+export interface DownloaderConfig {
+  maxParallel?: number;
+  downloadDir?: string;
+}
+
+export async function patchConfig(config: DownloaderConfig): Promise<void> {
+  const res = await downloaderFetch(`${DOWNLOADER_URL}/config`, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ maxParallel }),
+    body: JSON.stringify(config),
   });
   if (!res.ok) {
     throw new Error(`downloader PATCH /config ${res.status}`);
@@ -115,7 +121,7 @@ export interface DownloaderJobSnapshot {
 }
 
 export async function getJobs(): Promise<DownloaderJobSnapshot[]> {
-  const res = await fetch(`${DOWNLOADER_URL}/jobs`);
+  const res = await downloaderFetch(`${DOWNLOADER_URL}/jobs`);
   if (!res.ok) throw new Error(`downloader GET /jobs ${res.status}`);
   const body = await res.json() as { jobs?: DownloaderJobSnapshot[] };
   return body.jobs ?? [];

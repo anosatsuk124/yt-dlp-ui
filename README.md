@@ -33,7 +33,9 @@ behind a Tailscale sidecar so every device on your tailnet can use it.
 - History page with direct download links to the finished files.
 - Optional MEGA auto-upload: finished files are pushed to your MEGA Cloud
   Drive, the local copy is deleted, and the History row flips to a "MEGA"
-  badge. Audio downloads go to a configurable subfolder.
+  badge. Audio downloads go to a configurable subfolder. A **Keep local copy**
+  option (global default, or pinned per download in the queue form) uploads to
+  MEGA *without* removing the on-disk file.
 - **Maintenance / Update tasks.** A plugin-based migration system in *Settings*;
   each task previews the exact operations it will run (generated from the live
   database) in a modal before you confirm. Ships with a *Backfill content
@@ -73,6 +75,74 @@ docker compose up -d --build
 Paste a URL, hit **Enqueue**, and watch the progress bar move. If the first
 download finishes and the file appears in `./downloads`, everything is wired
 up correctly.
+
+## Desktop app (Tauri)
+
+The same app also ships as a native desktop application (Linux/macOS/Windows)
+built with **Tauri v2**, with **every external tool bundled** (yt-dlp, ffmpeg,
+ffprobe and a node runtime) and **no TCP port opened**. The Rust core is a thin
+supervisor + reverse proxy: it launches the existing Go downloader and Next.js
+server as sidecars that talk over a **Unix domain socket** (Linux/macOS) or a
+**named pipe** (Windows); the webview reaches the Next.js server through a custom
+`app://` URI scheme that Rust proxies over that socket, and live job updates are
+delivered as Tauri events (the SSE stream is bridged in Rust). The very same
+Go/Next.js code backs both this and the Docker deployment — desktop behaviour is
+gated purely on `DOWNLOADER_SOCKET` / `WEB_SOCKET`, so Docker is unaffected.
+
+```
+ ┌─────────┐  app:// (custom proto, no socket)  ┌───────────────────────────┐
+ │ Webview │ ◀───────────────────────────────▶ │ Rust core (proxy + super- │
+ └─────────┘   downloader-event (Tauri events)  │ visor + SSE→event bridge) │
+                                                 └────────────┬──────────────┘
+                              UDS / named pipe (no TCP)        │
+                  ┌──────────────────────────────┬────────────┘
+                  ▼                               ▼
+            Next.js (node)                  Go downloader  ──exec──▶ yt-dlp
+            SQLite/MEGA/API                                          ffmpeg / node
+            (all bundled)                                           (all bundled)
+```
+
+Finished files land in `~/Downloads/yt-dlp-ui`; the DB, cookies and certs live
+in the per-user app-data dir. A native notification fires on completion, and the
+app checks for updates on launch.
+
+### Building locally
+
+Prerequisites: Rust, Go 1.22+, Node 20+, the Tauri CLI (`cargo install
+tauri-cli --version "^2"`) and the platform webview libraries (on Linux:
+`webkit2gtk-4.1`, `libsoup-3.0`, `gtk3`, `librsvg`).
+
+```bash
+# Fetches/pins yt-dlp+ffmpeg+node, builds the web app and the Go downloader,
+# then runs `tauri build`. Produces installers under src-tauri/target/release/bundle/.
+bash scripts/build-desktop.sh
+```
+
+On **Arch Linux**, `packaging/arch/PKGBUILD` builds a lean package
+(`yt-dlp-ui-desktop-git`) that depends on the system `yt-dlp`/`ffmpeg`/`nodejs`
+instead of bundling them, installs under `/usr/lib/yt-dlp-ui` and adds no extra
+binaries to `/usr/bin`:
+
+```bash
+cd packaging/arch && makepkg -si
+```
+
+### Releases & auto-update
+
+`.github/workflows/release.yml` builds, signs (updater) and publishes a draft
+GitHub Release for all five targets when a `v*` tag is pushed. The in-app updater
+requires its **own** signing key (independent of OS code signing, which is
+currently disabled — artifacts are unsigned but updater-signed). One-time setup:
+
+```bash
+cargo tauri signer generate -w ~/.tauri/ytdlpui-updater.key   # keep the private key safe
+```
+
+Then in the GitHub repo, set secrets `TAURI_SIGNING_PRIVATE_KEY` (the private key
+file's contents) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, and put the matching
+public key in `src-tauri/tauri.conf.json` under `plugins.updater.pubkey`. To
+enable OS code signing later, add the Apple/Windows secrets documented inline in
+`release.yml`.
 
 ## Configuration
 
@@ -162,10 +232,22 @@ local copy, and flip the History row to a "MEGA" badge.
    - Optionally set the **Audio subfolder** (default `audio`): audio-only
      downloads upload to `<destination folder>/<audio subfolder>` instead of
      the main folder.
+   - Optionally turn on **Keep local copy** to keep the on-disk file after a
+     successful upload instead of deleting it (default: delete).
    - **Save**.
 3. From now on, every job that reaches `completed` is queued for upload.
    The History page shows `MEGA queued` → `MEGA…` → `✓ MEGA`. Failures stay
    on local disk and surface as `MEGA failed` with the error in the tooltip.
+
+The queue form has a per-download **Keep local copy after MEGA upload**
+checkbox (shown when MEGA is enabled). It defaults to the global setting and
+applies to every URL in that batch, so you can keep just one download on disk
+while the rest are deleted after upload (or vice-versa).
+
+A kept local copy stays manageable from the History page: an uploaded row that
+still has its file shows the usual **Download** / **Show in folder** link plus a
+**Delete local** action that removes the on-disk copy (reclaiming the space)
+while leaving the file on MEGA.
 
 When you **Overwrite** an existing download, the old MEGA file is deleted
 (by name, permanently) before the replacement is re-uploaded. If that remote

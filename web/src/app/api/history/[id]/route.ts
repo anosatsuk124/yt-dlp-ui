@@ -16,9 +16,29 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
 // local file if it still exists. Refuses to touch rows whose MEGA upload
 // already finished — those are 'gone locally on purpose' and shouldn't
 // look like the user can re-delete them from this UI.
-export async function DELETE(_req: Request, { params }: { params: { id: string } }) {
+//
+// `?localOnly=1` is a narrower action used for keep-local uploads: delete only
+// the retained on-disk copy of an already-uploaded file, leaving the DB row and
+// the MEGA copy intact. The entry then reverts to the normal "uploaded, local
+// gone" state.
+export async function DELETE(req: Request, { params }: { params: { id: string } }) {
   const job = getJob(params.id);
   if (!job) return NextResponse.json({ error: "not found" }, { status: 404 });
+
+  const localOnly = new URL(req.url).searchParams.get("localOnly") === "1";
+  if (localOnly) {
+    if (job.mega_status !== "uploaded") {
+      return NextResponse.json(
+        { error: "local-only delete applies to already-uploaded entries" },
+        { status: 409 },
+      );
+    }
+    if (job.file_path) {
+      try { fs.unlinkSync(job.file_path); } catch { /* already gone — fine */ }
+      cleanupFragments(job.file_path);
+    }
+    return NextResponse.json({ ok: true, localDeleted: true }, { status: 200 });
+  }
 
   if (job.mega_status === "uploaded") {
     return NextResponse.json(

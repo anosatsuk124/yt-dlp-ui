@@ -14,10 +14,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -252,6 +254,10 @@ type Config struct {
 	DownloadDir string
 	CookiesDir  string
 	YTDLPPath   string
+	// Socket, when non-empty (DOWNLOADER_SOCKET), makes the server listen on a
+	// Unix domain socket / Windows named pipe instead of a TCP port. Used by the
+	// Tauri desktop build so no TCP port is ever opened; empty in Docker (TCP).
+	Socket string
 }
 
 func loadConfig() Config {
@@ -261,6 +267,7 @@ func loadConfig() Config {
 		DownloadDir: envOr("DOWNLOAD_DIR", "/downloads"),
 		CookiesDir:  envOr("COOKIES_DIR", "/cookies"),
 		YTDLPPath:   envOr("YTDLP_PATH", "yt-dlp"),
+		Socket:      os.Getenv("DOWNLOADER_SOCKET"),
 	}
 }
 
@@ -432,6 +439,11 @@ type Pool struct {
 	wg          sync.WaitGroup
 	stopWorkers context.CancelFunc
 	workersCtx  context.Context
+
+	// Runtime-updatable output directory (set via PATCH /config). Guarded by
+	// its own mutex rather than p.mu, which resize holds across wg.Wait().
+	ddMu        sync.Mutex
+	downloadDir string
 }
 
 func newPool(cfg Config, reg *Registry, bus *EventBus) *Pool {
@@ -441,6 +453,7 @@ func newPool(cfg Config, reg *Registry, bus *EventBus) *Pool {
 		bus:         bus,
 		maxParallel: cfg.MaxParallel,
 		jobs:        make(chan Job, 1000),
+		downloadDir: cfg.DownloadDir,
 	}
 	p.workersCtx, p.stopWorkers = context.WithCancel(context.Background())
 	p.startWorkers(p.maxParallel)
@@ -474,6 +487,18 @@ func (p *Pool) worker(ctx context.Context, id int) {
 // enqueue queues a job. The caller has already added it to the registry.
 func (p *Pool) enqueue(j Job) {
 	p.jobs <- j
+}
+
+func (p *Pool) setDownloadDir(dir string) {
+	p.ddMu.Lock()
+	p.downloadDir = dir
+	p.ddMu.Unlock()
+}
+
+func (p *Pool) getDownloadDir() string {
+	p.ddMu.Lock()
+	defer p.ddMu.Unlock()
+	return p.downloadDir
 }
 
 // resize drains current workers, swaps the channel, and starts a new set.
@@ -567,7 +592,7 @@ func (p *Pool) run(parentCtx context.Context, j Job) {
 	// that uses cookies. Copy the file to a per-job temp under /tmp,
 	// hand yt-dlp the temp path, and discard it on exit.
 	if j.CookiesFile != "" {
-		tmp, err := materializeCookies(j.CookiesFile, j.ID)
+		tmp, err := materializeCookies(j.CookiesFile, j.ID, p.cfg.CookiesDir)
 		if err != nil {
 			p.fail(j.ID, "cookies: "+err.Error())
 			return
@@ -576,7 +601,7 @@ func (p *Pool) run(parentCtx context.Context, j Job) {
 		j.CookiesFile = tmp
 	}
 
-	args := buildArgs(j, p.cfg.DownloadDir)
+	args := buildArgs(j, p.getDownloadDir())
 	slog.Info("running yt-dlp", "id", j.ID, "args", redactArgs(args))
 
 	cmd := exec.Command(p.cfg.YTDLPPath, args...)
@@ -1125,8 +1150,29 @@ func buildArgs(j Job, downloadDir string) []string {
 // can write back to it without touching the read-only canonical mount.
 // The temp filename embeds the job ID for traceability if cleanup ever
 // races (it shouldn't — the caller defers os.Remove).
-func materializeCookies(src, jobID string) (string, error) {
-	in, err := os.ReadFile(src)
+func materializeCookies(src, jobID, cookiesDir string) (string, error) {
+	srcAbs, err := filepath.Abs(src)
+	if err != nil {
+		return "", fmt.Errorf("cookies path: %w", err)
+	}
+	dirAbs, err := filepath.Abs(cookiesDir)
+	if err != nil {
+		return "", fmt.Errorf("cookies dir: %w", err)
+	}
+	realDir, err := filepath.EvalSymlinks(dirAbs)
+	if err != nil {
+		return "", fmt.Errorf("cookies dir: %w", err)
+	}
+	realSrc, err := filepath.EvalSymlinks(srcAbs)
+	if err != nil {
+		return "", fmt.Errorf("cookies path: %w", err)
+	}
+	rel, err := filepath.Rel(realDir, realSrc)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("cookies path outside cookies dir")
+	}
+
+	in, err := os.ReadFile(realSrc)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", src, err)
 	}
@@ -1267,7 +1313,7 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 	// Same treatment as run(): the /cookies mount is read-only but yt-dlp
 	// rewrites the jar on exit, so hand it a writable per-request temp copy.
 	if req.CookiesFile != "" {
-		tmp, err := materializeCookies(req.CookiesFile, "resolve")
+		tmp, err := materializeCookies(req.CookiesFile, "resolve", s.cfg.CookiesDir)
 		if err != nil {
 			http.Error(w, "cookies: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -1460,21 +1506,28 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) patchConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		MaxParallel int `json:"maxParallel"`
+		MaxParallel *int    `json:"maxParallel,omitempty"`
+		DownloadDir *string `json:"downloadDir,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if body.MaxParallel < 1 {
-		http.Error(w, "maxParallel must be >= 1", http.StatusBadRequest)
-		return
+	resp := map[string]any{}
+	if body.MaxParallel != nil {
+		if *body.MaxParallel < 1 {
+			http.Error(w, "maxParallel must be >= 1", http.StatusBadRequest)
+			return
+		}
+		s.pool.resize(*body.MaxParallel)
+		resp["maxParallel"] = *body.MaxParallel
 	}
-	s.pool.resize(body.MaxParallel)
+	if body.DownloadDir != nil && *body.DownloadDir != "" {
+		s.pool.setDownloadDir(*body.DownloadDir)
+		resp["downloadDir"] = *body.DownloadDir
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"maxParallel": body.MaxParallel,
-	})
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
@@ -1483,24 +1536,20 @@ func (s *Server) healthz(w http.ResponseWriter, _ *http.Request) {
 }
 
 // ----------------------------------------------------------------------------
-// Process signaling (split out so it's easy to keep stdlib-only & portable)
+// Listener
 // ----------------------------------------------------------------------------
 
-func sysProcAttr() *syscall.SysProcAttr {
-	// Use a dedicated process group so we can SIGINT/SIGKILL the entire tree
-	// (yt-dlp + any spawned ffmpeg child).
-	return &syscall.SysProcAttr{Setpgid: true}
-}
-
-func sendSignal(cmd *exec.Cmd, sig syscall.Signal) error {
-	if cmd.Process == nil {
-		return nil
+// listen returns the net.Listener the HTTP server should serve on. When
+// cfg.Socket (DOWNLOADER_SOCKET) is set it is a Unix domain socket on
+// Unix or a named pipe on Windows (desktop/Tauri mode, no TCP port);
+// otherwise it is a TCP port (the Docker default). The socket binding lives
+// in listen_unix.go / listen_windows.go so the TCP path stays
+// dependency-free on every platform.
+func listen(cfg Config) (net.Listener, error) {
+	if cfg.Socket != "" {
+		return listenSocket(cfg.Socket)
 	}
-	// Negative PID targets the process group.
-	if err := syscall.Kill(-cmd.Process.Pid, sig); err == nil {
-		return nil
-	}
-	return cmd.Process.Signal(sig)
+	return net.Listen("tcp", ":"+cfg.Port)
 }
 
 // ----------------------------------------------------------------------------
@@ -1525,9 +1574,14 @@ func main() {
 	srv := &Server{cfg: cfg, registry: reg, bus: bus, pool: pool}
 
 	httpServer := &http.Server{
-		Addr:              ":" + cfg.Port,
 		Handler:           srv.routes(),
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	ln, err := listen(cfg)
+	if err != nil {
+		slog.Error("listen failed", "err", err, "socket", cfg.Socket, "port", cfg.Port)
+		os.Exit(1)
 	}
 
 	// Signal handling.
@@ -1536,8 +1590,8 @@ func main() {
 
 	serverErr := make(chan error, 1)
 	go func() {
-		slog.Info("http listening", "addr", httpServer.Addr)
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		slog.Info("http listening", "addr", ln.Addr())
+		if err := httpServer.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErr <- err
 		}
 		close(serverErr)

@@ -1,0 +1,105 @@
+# Maintainer: Satsuki Akiba <anosatsuk124@gmail.com>
+#
+# Native desktop build of yt-dlp-ui (Tauri v2). Uses the system yt-dlp / ffmpeg
+# (always in /usr/bin) but bundles its own node, because version managers like
+# fnm/nvm are not visible to GUI launchers — relying on the launch PATH for node
+# made the app hang on its splash when started from GNOME. Opens no network port
+# (the Go downloader and Next.js server talk over a Unix socket). Everything
+# installs under /usr/lib/yt-dlp-ui with a single launcher symlink in /usr/bin.
+
+_repo=yt-dlp-ui
+_branch=feat/native-local-package
+pkgname=yt-dlp-ui-desktop-git
+pkgver=0.1.0.r63.g9f77a39b
+pkgrel=1
+pkgdesc="Native desktop UI for yt-dlp (Tauri); no open ports, bundles node, uses system yt-dlp/ffmpeg"
+arch=('x86_64' 'aarch64')
+url="https://github.com/anosatsuk124/yt-dlp-ui"
+license=('custom')
+depends=('webkit2gtk-4.1' 'gtk3' 'libsoup3' 'ffmpeg' 'yt-dlp')
+makedepends=('rust' 'cargo' 'go' 'npm' 'git' 'curl')
+provides=('yt-dlp-ui-desktop')
+conflicts=('yt-dlp-ui-desktop')
+options=('!strip' '!lto')
+source=("${_repo}::git+https://github.com/anosatsuk124/yt-dlp-ui.git#branch=${_branch}")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$srcdir/$_repo"
+  printf "0.1.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=8 HEAD)"
+}
+
+prepare() {
+  cd "$srcdir/$_repo/web"
+  npm ci
+}
+
+build() {
+  local src="$srcdir/$_repo"
+  local triple; triple="$(rustc -vV | sed -n 's/host: //p')"
+
+  # --- bundle node: fetch the official runtime and build everything with it, so
+  #     better-sqlite3's native addon matches the node we ship and the app never
+  #     depends on the launch PATH (fnm/nvm are invisible to GUI launchers). ---
+  local nodever=20.15.0
+  local nodearch; [ "$CARCH" = aarch64 ] && nodearch=arm64 || nodearch=x64
+  local nodepkg="node-v${nodever}-linux-${nodearch}"
+  curl -fL --retry 3 "https://nodejs.org/dist/v${nodever}/${nodepkg}.tar.xz" -o "$srcdir/${nodepkg}.tar.xz"
+  curl -fL --retry 3 "https://nodejs.org/dist/v${nodever}/SHASUMS256.txt" -o "$srcdir/node-sums.txt"
+  ( cd "$srcdir" && grep " ${nodepkg}.tar.xz\$" node-sums.txt | sha256sum -c - )
+  tar xf "$srcdir/${nodepkg}.tar.xz" -C "$srcdir"
+  export PATH="$srcdir/${nodepkg}/bin:$PATH"
+  install -Dm755 "$srcdir/${nodepkg}/bin/node" "$src/src-tauri/resources/bin/node"
+
+  # --- web app + single-file Node server (built with the bundled node) ---
+  cd "$src/web"
+  npm run build
+  install -d "$src/src-tauri/resources/web"
+  node scripts/build-server.mjs "$src/src-tauri/resources/web/server.js"
+  cp -rT .next "$src/src-tauri/resources/web/.next"
+  cp next.config.mjs schema.sql package.json package-lock.json "$src/src-tauri/resources/web/"
+  ( cd "$src/src-tauri/resources/web" && npm ci --omit=dev )
+
+  # --- Go downloader (our sidecar binary) ---
+  cd "$src/downloader"
+  CGO_ENABLED=0 go build -ldflags="-s -w" -o "$src/src-tauri/binaries/downloader-$triple" ./cmd/downloader
+
+  # tauri-build validates externalBin paths exist; the node externalBin is unused
+  # at runtime (we install node into resources/bin), so a placeholder suffices.
+  install -Dm755 /dev/null "$src/src-tauri/binaries/node-$triple"
+
+  # --- compile the app (no bundling; we install into the filesystem ourselves) ---
+  cd "$src/src-tauri"
+  cargo build --release --locked
+}
+
+package() {
+  local src="$srcdir/$_repo"
+  local triple; triple="$(rustc -vV | sed -n 's/host: //p')"
+  local libdir="$pkgdir/usr/lib/yt-dlp-ui"
+
+  install -Dm755 "$src/src-tauri/target/release/ytdlp-ui" "$libdir/yt-dlp-ui"
+  install -Dm755 "$src/src-tauri/binaries/downloader-$triple" "$libdir/downloader"
+  install -Dm755 "$src/src-tauri/resources/bin/node" "$libdir/bin/node"
+  cp -rT "$src/src-tauri/resources/web" "$libdir/web"
+
+  # launcher on PATH (the binary resolves its siblings via /proc/self/exe)
+  install -d "$pkgdir/usr/bin"
+  ln -s /usr/lib/yt-dlp-ui/yt-dlp-ui "$pkgdir/usr/bin/yt-dlp-ui"
+
+  # desktop entry + icons
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/yt-dlp-ui.desktop" <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=yt-dlp-ui
+Comment=Drive yt-dlp from a native desktop app
+Exec=yt-dlp-ui
+Icon=yt-dlp-ui
+Terminal=false
+Categories=Utility;AudioVideo;Network;
+DESKTOP
+  install -Dm644 "$src/src-tauri/icons/128x128.png" \
+    "$pkgdir/usr/share/icons/hicolor/128x128/apps/yt-dlp-ui.png"
+  install -Dm644 "$src/src-tauri/icons/icon.png" \
+    "$pkgdir/usr/share/icons/hicolor/512x512/apps/yt-dlp-ui.png"
+}

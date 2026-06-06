@@ -1,0 +1,6 @@
+# makepkg build artifacts
+/src/
+/pkg/
+/yt-dlp-ui/
+*.pkg.tar.*
+*.log

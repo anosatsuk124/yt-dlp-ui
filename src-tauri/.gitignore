@@ -1,0 +1,8 @@
+/target
+/gen/schemas
+
+# Bundled tool binaries and the built web app are fetched/produced by the
+# packaging scripts (P4), not committed.
+/binaries
+/resources/bin
+/resources/web

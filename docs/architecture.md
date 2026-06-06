@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   content_hash     TEXT,   -- sha256 of the finished file
   save_as          TEXT,   -- custom output name (save-as conflict resolution)
   mega_remote_name TEXT,   -- basename uploaded to MEGA (for overwrite delete)
+  mega_keep_local  INTEGER, -- per-job keep-local override (1/0/NULL=use setting)
   playlist_title   TEXT,   -- set for playlist entries; routes MEGA to playlists/<title>/
   season           TEXT,   -- season name; routes MEGA to playlists/<title>/<season>/
   season_number    INTEGER -- season number (sorting); NULL when unknown
@@ -195,7 +196,10 @@ that:
    download via a `season` SSE event). The "Regroup playlist uploads by season"
    maintenance task moves pre-existing uploads into those season subfolders.
 3. On success: `mega_status='uploaded'`, `mega_uploaded_at=now`, then the
-   local file at `file_path` is `unlink`ed. On failure: `mega_status='failed'`,
+   local file at `file_path` is `unlink`ed — **unless** keep-local is in effect,
+   in which case the file is left on disk. Keep-local resolves per job:
+   `jobs.mega_keep_local` (1/0) wins when set, otherwise the global
+   `mega_keep_local` setting applies. On failure: `mega_status='failed'`,
    `mega_error=<message>`, the local file is **not** touched.
 4. On server start, `mega_status IN ('pending','uploading')` rows are
    re-enqueued so a crash mid-upload retries on next boot.

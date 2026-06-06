@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   content_hash     TEXT,
   save_as          TEXT,
   mega_remote_name TEXT,
+  mega_keep_local  INTEGER,
   playlist_title   TEXT,
   season           TEXT,
   season_number    INTEGER
