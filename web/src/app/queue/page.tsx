@@ -170,7 +170,7 @@ export default function Page() {
     sels: { format: FormatKey; containers: ContainerKey[] }[],
     res?: Resolution,
     names?: Record<string, string>,
-  ): Promise<"ok" | "conflict" | "error"> {
+  ): Promise<{ status: "ok" | "conflict" | "error"; failedUrls: string[] }> {
     const authPayload: Partial<AuthForm> = {};
     for (const k of Object.keys(auth) as AuthField[]) {
       const v = auth[k].trim();
@@ -198,20 +198,34 @@ export default function Page() {
         setConflicts((data.conflicts ?? []) as Conflict[]);
         setResolution("append");
         setSaveAsNames({});
-        return "conflict";
+        return { status: "conflict", failedUrls: [] };
       }
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data?.error ?? `HTTP ${r.status}`);
       const n = data.jobs?.length ?? 0;
       const skipped = data.skipped?.length ?? 0;
-      toast({
-        title: "Enqueued",
-        description: `${n} job(s) queued${skipped ? `, ${skipped} skipped` : ""}.`,
-      });
-      return "ok";
+      // URLs the downloader couldn't resolve (e.g. a playlist that failed to
+      // enumerate). They are NOT queued — surface them and let the caller keep
+      // them in the textarea so the user can fix/retry instead of losing them.
+      const failed = (data.failed ?? []) as { url: string; error: string }[];
+      if (failed.length > 0) {
+        toast({
+          title: n > 0 ? "Enqueued with errors" : "Could not resolve",
+          description:
+            `${n} job(s) queued${skipped ? `, ${skipped} skipped` : ""}, ` +
+            `${failed.length} URL(s) failed to resolve (kept below): ` +
+            failed.map(f => f.url).join(", "),
+        });
+      } else {
+        toast({
+          title: "Enqueued",
+          description: `${n} job(s) queued${skipped ? `, ${skipped} skipped` : ""}.`,
+        });
+      }
+      return { status: "ok", failedUrls: failed.map(f => f.url) };
     } catch (err) {
       toast({ title: "Failed to enqueue", description: (err as Error).message });
-      return "error";
+      return { status: "error", failedUrls: [] };
     }
   }
 
@@ -230,9 +244,15 @@ export default function Page() {
     setSubmitting(true);
     try {
       const result = await postJobs(list, sels);
-      if (result === "ok") {
-        setUrls("");
-        setAuth(a => ({ ...a, password: "", twoFactor: "", videoPassword: "", apPassword: "", clientCertPassword: "" }));
+      if (result.status === "ok") {
+        if (result.failedUrls.length > 0) {
+          // Partial success: keep the unresolved URLs (and auth) so the user
+          // can fix and retry; the queued ones are gone from the box.
+          setUrls(result.failedUrls.join("\n"));
+        } else {
+          setUrls("");
+          setAuth(a => ({ ...a, password: "", twoFactor: "", videoPassword: "", apPassword: "", clientCertPassword: "" }));
+        }
       }
       // "conflict" → modal is now open; "error" → toast already shown.
     } finally {
@@ -246,10 +266,14 @@ export default function Page() {
     setSubmitting(true);
     try {
       const result = await postJobs(list, sels, resolution, resolution === "save-as" ? saveAsNames : undefined);
-      if (result === "ok") {
+      if (result.status === "ok") {
         setConflicts(null);
-        setUrls("");
-        setAuth(a => ({ ...a, password: "", twoFactor: "", videoPassword: "", apPassword: "", clientCertPassword: "" }));
+        if (result.failedUrls.length > 0) {
+          setUrls(result.failedUrls.join("\n"));
+        } else {
+          setUrls("");
+          setAuth(a => ({ ...a, password: "", twoFactor: "", videoPassword: "", apPassword: "", clientCertPassword: "" }));
+        }
       }
       // a fresh 409 would re-open with new conflicts; error keeps the modal.
     } finally {

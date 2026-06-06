@@ -14,6 +14,7 @@ import {
   updateJobStatus,
   updateJobProgress,
   updateJobTitle,
+  updateJobSeason,
   updateJobHash,
   markMegaPending,
   reconcileOrphans,
@@ -42,7 +43,7 @@ const lastProgressWrite = new Map<string, number>();
 function sleep(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
 interface DownloaderEvent {
-  type: "progress" | "status" | "title";
+  type: "progress" | "status" | "title" | "season";
   id: string;
   status?: string;
   progress?: number;
@@ -50,6 +51,8 @@ interface DownloaderEvent {
   eta?: string;
   filePath?: string;
   title?: string;
+  season?: string;
+  seasonNumber?: string;
   error?: string;
 }
 
@@ -93,6 +96,11 @@ function applyEvent(event: DownloaderEvent) {
   } else if (event.type === "title" && event.title) {
     try {
       updateJobTitle(event.id, event.title);
+    } catch { /* job may not exist yet locally */ }
+  } else if (event.type === "season" && event.season) {
+    const n = event.seasonNumber ? parseInt(event.seasonNumber, 10) : NaN;
+    try {
+      updateJobSeason(event.id, event.season, Number.isFinite(n) ? n : null);
     } catch { /* job may not exist yet locally */ }
   }
 }

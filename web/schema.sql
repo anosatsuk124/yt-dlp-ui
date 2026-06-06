@@ -24,7 +24,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   content_hash     TEXT,
   save_as          TEXT,
   mega_remote_name TEXT,
-  mega_keep_local  INTEGER
+  mega_keep_local  INTEGER,
+  playlist_title   TEXT,
+  season           TEXT,
+  season_number    INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status   ON jobs(status);

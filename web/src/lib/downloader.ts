@@ -35,6 +35,53 @@ export async function postJob(payload: EnqueuePayload): Promise<void> {
   }
 }
 
+// One entry of an enumerated playlist (a concrete, single-video URL).
+export interface ResolveEntry {
+  url: string;
+  id?: string;
+  title?: string;
+}
+
+export interface ResolveResult {
+  isPlaylist: boolean;
+  playlistTitle?: string;
+  entries?: ResolveEntry[];
+  // For a single (non-playlist) URL: yt-dlp's resolved webpage_url, so the
+  // caller can enqueue the canonical page instead of an opaque short link.
+  canonicalUrl?: string;
+  title?: string;
+  // Season metadata for the single-video case (regroup-seasons maintenance).
+  season?: string;
+  seasonNumber?: string;
+}
+
+// Ask the downloader whether a URL is a playlist and, if so, enumerate its
+// entries (it has yt-dlp; the web container does not). Carries the same
+// cookies/auth a download would so private playlists resolve. Throws on a
+// downloader/extractor error so the caller can fall back to a single job.
+export async function resolvePlaylist(payload: {
+  url: string;
+  cookiesFile?: string;
+  // Forwarded so list-limiting flags (--playlist-items, --playlist-start/end,
+  // --match-filter, an explicit --no-playlist, …) apply during enumeration —
+  // the per-entry jobs run with --no-playlist, so limiting must happen here.
+  extraArgs?: string[];
+  auth?: AuthOptions;
+}): Promise<ResolveResult> {
+  const { auth, ...rest } = payload;
+  const body = { ...rest, ...(auth ?? {}) };
+  const res = await fetch(`${DOWNLOADER_URL}/resolve`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`downloader POST /resolve ${res.status}: ${txt}`);
+  }
+  return (await res.json()) as ResolveResult;
+}
+
 export async function cancelJob(id: string): Promise<void> {
   const res = await downloaderFetch(`${DOWNLOADER_URL}/jobs/${encodeURIComponent(id)}`, {
     method: "DELETE",

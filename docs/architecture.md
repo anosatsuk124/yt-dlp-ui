@@ -123,7 +123,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   content_hash     TEXT,   -- sha256 of the finished file
   save_as          TEXT,   -- custom output name (save-as conflict resolution)
   mega_remote_name TEXT,   -- basename uploaded to MEGA (for overwrite delete)
-  mega_keep_local  INTEGER -- per-job keep-local override (1/0/NULL=use setting)
+  mega_keep_local  INTEGER, -- per-job keep-local override (1/0/NULL=use setting)
+  playlist_title   TEXT,   -- set for playlist entries; routes MEGA to playlists/<title>/
+  season           TEXT,   -- season name; routes MEGA to playlists/<title>/<season>/
+  season_number    INTEGER -- season number (sorting); NULL when unknown
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_status   ON jobs(status);
@@ -185,7 +188,13 @@ that:
 2. A single sequential worker drains the queue. The first item triggers a
    MEGA login (`new Storage({ email, password })`), the destination folder
    path is walked/created (`mkdir` per segment), and each subsequent queue
-   item reuses that connection until empty.
+   item reuses that connection until empty. The destination is the configured
+   folder for video, its `<audio>` subfolder for audio-only, or
+   `<folder>/playlists/<playlist title>/` when the job came from an expanded
+   playlist (audio and video alike, so the playlist stays together), plus a
+   `/<season>/` level when the source exposed a season (captured during the
+   download via a `season` SSE event). The "Regroup playlist uploads by season"
+   maintenance task moves pre-existing uploads into those season subfolders.
 3. On success: `mega_status='uploaded'`, `mega_uploaded_at=now`, then the
    local file at `file_path` is `unlink`ed — **unless** keep-local is in effect,
    in which case the file is left on disk. Keep-local resolves per job:

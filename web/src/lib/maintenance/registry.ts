@@ -3,8 +3,9 @@
 
 import type { MaintenanceTask } from "./types";
 import { backfillHashTask } from "./backfill-hash";
+import { regroupSeasonsTask } from "./regroup-seasons";
 
-export const REGISTRY: MaintenanceTask[] = [backfillHashTask];
+export const REGISTRY: MaintenanceTask[] = [backfillHashTask, regroupSeasonsTask];
 
 export function getTask(id: string): MaintenanceTask | undefined {
   return REGISTRY.find(t => t.id === id);

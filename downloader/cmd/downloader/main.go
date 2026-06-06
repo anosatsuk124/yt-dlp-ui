@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,15 +74,17 @@ type Job struct {
 // JobState is the in-memory record kept for each job we have seen.
 type JobState struct {
 	Job
-	Status    JobStatus `json:"status"`
-	Progress  float64   `json:"progress"`
-	Speed     string    `json:"speed,omitempty"`
-	ETA       string    `json:"eta,omitempty"`
-	FilePath  string    `json:"filePath,omitempty"`
-	Title     string    `json:"title,omitempty"`
-	Error     string    `json:"error,omitempty"`
-	StartedAt time.Time `json:"startedAt,omitempty"`
-	EndedAt   time.Time `json:"endedAt,omitempty"`
+	Status       JobStatus `json:"status"`
+	Progress     float64   `json:"progress"`
+	Speed        string    `json:"speed,omitempty"`
+	ETA          string    `json:"eta,omitempty"`
+	FilePath     string    `json:"filePath,omitempty"`
+	Title        string    `json:"title,omitempty"`
+	Season       string    `json:"season,omitempty"`
+	SeasonNumber string    `json:"seasonNumber,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	StartedAt    time.Time `json:"startedAt,omitempty"`
+	EndedAt      time.Time `json:"endedAt,omitempty"`
 }
 
 // MarshalJSON wipes the password-bearing fields before encoding so the
@@ -104,17 +107,140 @@ func (s JobState) MarshalJSON() ([]byte, error) {
 // Event is the SSE payload shape. Fields are optional; only those populated
 // for the event type are serialized.
 type Event struct {
-	Type       string    `json:"type"`
-	ID         string    `json:"id"`
-	Status     JobStatus `json:"status,omitempty"`
-	Progress   float64   `json:"progress,omitempty"`
-	Speed      string    `json:"speed,omitempty"`
-	ETA        string    `json:"eta,omitempty"`
-	Downloaded int64     `json:"downloaded,omitempty"`
-	Total      int64     `json:"total,omitempty"`
-	FilePath   string    `json:"filePath,omitempty"`
-	Title      string    `json:"title,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	Type         string    `json:"type"`
+	ID           string    `json:"id"`
+	Status       JobStatus `json:"status,omitempty"`
+	Progress     float64   `json:"progress,omitempty"`
+	Speed        string    `json:"speed,omitempty"`
+	ETA          string    `json:"eta,omitempty"`
+	Downloaded   int64     `json:"downloaded,omitempty"`
+	Total        int64     `json:"total,omitempty"`
+	FilePath     string    `json:"filePath,omitempty"`
+	Title        string    `json:"title,omitempty"`
+	Season       string    `json:"season,omitempty"`
+	SeasonNumber string    `json:"seasonNumber,omitempty"`
+	Error        string    `json:"error,omitempty"`
+}
+
+// ResolveRequest is the body of POST /resolve. It carries a single URL plus the
+// same optional cookies/auth fields a Job does, used to enumerate a playlist
+// before the caller fans it out into one Job per entry.
+type ResolveRequest struct {
+	URL         string `json:"url"`
+	CookiesFile string `json:"cookiesFile,omitempty"`
+
+	// ExtraArgs is the caller's free-form yt-dlp args. They are applied during
+	// enumeration too so playlist-selection flags (--playlist-items,
+	// --playlist-start/end, --match-filter, an explicit --no-playlist, …) take
+	// effect here — the per-entry download jobs run with --no-playlist, so any
+	// list-limiting has to happen at resolve time or it is lost.
+	ExtraArgs []string `json:"extraArgs,omitempty"`
+
+	Username           string `json:"username,omitempty"`
+	Password           string `json:"password,omitempty"`
+	TwoFactor          string `json:"twoFactor,omitempty"`
+	VideoPassword      string `json:"videoPassword,omitempty"`
+	APMSO              string `json:"apMso,omitempty"`
+	APUsername         string `json:"apUsername,omitempty"`
+	APPassword         string `json:"apPassword,omitempty"`
+	ClientCertFile     string `json:"clientCertFile,omitempty"`
+	ClientCertKeyFile  string `json:"clientCertKeyFile,omitempty"`
+	ClientCertPassword string `json:"clientCertPassword,omitempty"`
+}
+
+// ResolveEntry is one item of an enumerated playlist.
+type ResolveEntry struct {
+	URL   string `json:"url"`
+	ID    string `json:"id,omitempty"`
+	Title string `json:"title,omitempty"`
+}
+
+// ResolveResponse is the body of POST /resolve. IsPlaylist is false for a plain
+// single-video URL; CanonicalURL then carries yt-dlp's resolved webpage_url so
+// the caller can enqueue the real page (e.g. an abema.tv episode behind an
+// abema.go.link short link) instead of the opaque submitted URL — important for
+// per-domain cookie/auth matching and de-duplication.
+type ResolveResponse struct {
+	IsPlaylist    bool           `json:"isPlaylist"`
+	PlaylistTitle string         `json:"playlistTitle,omitempty"`
+	Entries       []ResolveEntry `json:"entries,omitempty"`
+	CanonicalURL  string         `json:"canonicalUrl,omitempty"`
+	Title         string         `json:"title,omitempty"`
+	// Season metadata for the single-video case — used by the "regroup seasons"
+	// maintenance task to place an already-uploaded file under its season folder.
+	Season       string `json:"season,omitempty"`
+	SeasonNumber string `json:"seasonNumber,omitempty"`
+}
+
+// authCreds is the shared bundle of yt-dlp credential fields carried by both a
+// Job (download) and a ResolveRequest (playlist enumeration), so the argv
+// builder appends them from one place.
+type authCreds struct {
+	Username           string
+	Password           string
+	TwoFactor          string
+	VideoPassword      string
+	APMSO              string
+	APUsername         string
+	APPassword         string
+	ClientCertFile     string
+	ClientCertKeyFile  string
+	ClientCertPassword string
+}
+
+func (j Job) creds() authCreds {
+	return authCreds{
+		Username: j.Username, Password: j.Password, TwoFactor: j.TwoFactor,
+		VideoPassword: j.VideoPassword, APMSO: j.APMSO, APUsername: j.APUsername,
+		APPassword: j.APPassword, ClientCertFile: j.ClientCertFile,
+		ClientCertKeyFile: j.ClientCertKeyFile, ClientCertPassword: j.ClientCertPassword,
+	}
+}
+
+func (r ResolveRequest) creds() authCreds {
+	return authCreds{
+		Username: r.Username, Password: r.Password, TwoFactor: r.TwoFactor,
+		VideoPassword: r.VideoPassword, APMSO: r.APMSO, APUsername: r.APUsername,
+		APPassword: r.APPassword, ClientCertFile: r.ClientCertFile,
+		ClientCertKeyFile: r.ClientCertKeyFile, ClientCertPassword: r.ClientCertPassword,
+	}
+}
+
+// appendAuthArgs appends a yt-dlp flag for each non-empty credential. Appended
+// before any user ExtraArgs so a user-supplied --username still wins (yt-dlp
+// takes the last occurrence).
+func appendAuthArgs(args []string, c authCreds) []string {
+	if c.Username != "" {
+		args = append(args, "--username", c.Username)
+	}
+	if c.Password != "" {
+		args = append(args, "--password", c.Password)
+	}
+	if c.TwoFactor != "" {
+		args = append(args, "--twofactor", c.TwoFactor)
+	}
+	if c.VideoPassword != "" {
+		args = append(args, "--video-password", c.VideoPassword)
+	}
+	if c.APMSO != "" {
+		args = append(args, "--ap-mso", c.APMSO)
+	}
+	if c.APUsername != "" {
+		args = append(args, "--ap-username", c.APUsername)
+	}
+	if c.APPassword != "" {
+		args = append(args, "--ap-password", c.APPassword)
+	}
+	if c.ClientCertFile != "" {
+		args = append(args, "--client-certificate", c.ClientCertFile)
+	}
+	if c.ClientCertKeyFile != "" {
+		args = append(args, "--client-certificate-key", c.ClientCertKeyFile)
+	}
+	if c.ClientCertPassword != "" {
+		args = append(args, "--client-certificate-password", c.ClientCertPassword)
+	}
+	return args
 }
 
 // ----------------------------------------------------------------------------
@@ -621,6 +747,36 @@ func (p *Pool) handleStdoutLine(id, line string, errBuf *rollingBuf, filePath *a
 		return
 	}
 
+	// Resolved season, emitted once per format-download by our
+	// `--print before_dl:SEASON_PROBE:%(season_number)s\t%(season)s`. The web
+	// side routes a playlist entry's MEGA upload to playlists/<title>/<season>/.
+	// Like TITLE_PROBE we forward only the first time per job (combo formats
+	// fire before_dl twice).
+	if strings.HasPrefix(line, "SEASON_PROBE:") {
+		rest := strings.TrimPrefix(line, "SEASON_PROBE:")
+		num, name, _ := strings.Cut(rest, "\t")
+		num = strings.TrimSpace(num)
+		name = strings.TrimSpace(name)
+		if name == "" || name == "NA" {
+			return
+		}
+		if num == "NA" {
+			num = ""
+		}
+		emit := false
+		p.registry.update(id, func(s *JobState) {
+			if s.Season == "" {
+				s.Season = name
+				s.SeasonNumber = num
+				emit = true
+			}
+		})
+		if emit {
+			p.bus.publish(Event{Type: "season", ID: id, Season: name, SeasonNumber: num})
+		}
+		return
+	}
+
 	// Resolved output path, also from --print before_dl. Without this the
 	// new yt-dlp + --progress-template combo never prints a
 	// `[download] Destination: …` line and the cleanup-on-cancel path has
@@ -863,6 +1019,12 @@ func sanitizeSegment(s string) string {
 func buildArgs(j Job, downloadDir string) []string {
 	args := []string{
 		"--newline", "--no-color", "--progress",
+		// Every job is a single concrete video: the web side enumerates any
+		// playlist up front (POST /resolve) and enqueues one job per entry, so
+		// the one-file-per-job pipeline (title probe, FINAL_PROBE, hash, MEGA
+		// upload) holds. --no-playlist keeps a stray playlist/`&list=` URL from
+		// fanning out into many files under a single job here.
+		"--no-playlist",
 		// yt-dlp's YouTube extractor needs a JavaScript runtime for the EJS
 		// player-response path; the Dockerfile installs nodejs but yt-dlp
 		// only auto-detects deno, so name node explicitly here. Harmless on
@@ -879,6 +1041,11 @@ func buildArgs(j Job, downloadDir string) []string {
 		// before any fragments are downloaded, so the UI can swap "raw URL"
 		// for a real title as soon as it's known.
 		"--print", "before_dl:TITLE_PROBE:%(title)s",
+		// Season metadata, emitted once per format as number<TAB>name. The web
+		// side groups a playlist entry's MEGA upload under
+		// playlists/<title>/<season>/. Both fields are NA on sources without
+		// season info, in which case no season subfolder is used.
+		"--print", "before_dl:SEASON_PROBE:%(season_number)s\t%(season)s",
 		// Same idea for the output path. The new yt-dlp + --progress-template
 		// combo suppresses the standard `[download] Destination: …` line,
 		// which is how we used to capture the filename for cleanup-on-
@@ -939,36 +1106,7 @@ func buildArgs(j Job, downloadDir string) []string {
 
 	// Auth flags. Appended before ExtraArgs so a user-supplied --username in
 	// the advanced args field still wins (yt-dlp takes the last occurrence).
-	if j.Username != "" {
-		args = append(args, "--username", j.Username)
-	}
-	if j.Password != "" {
-		args = append(args, "--password", j.Password)
-	}
-	if j.TwoFactor != "" {
-		args = append(args, "--twofactor", j.TwoFactor)
-	}
-	if j.VideoPassword != "" {
-		args = append(args, "--video-password", j.VideoPassword)
-	}
-	if j.APMSO != "" {
-		args = append(args, "--ap-mso", j.APMSO)
-	}
-	if j.APUsername != "" {
-		args = append(args, "--ap-username", j.APUsername)
-	}
-	if j.APPassword != "" {
-		args = append(args, "--ap-password", j.APPassword)
-	}
-	if j.ClientCertFile != "" {
-		args = append(args, "--client-certificate", j.ClientCertFile)
-	}
-	if j.ClientCertKeyFile != "" {
-		args = append(args, "--client-certificate-key", j.ClientCertKeyFile)
-	}
-	if j.ClientCertPassword != "" {
-		args = append(args, "--client-certificate-password", j.ClientCertPassword)
-	}
+	args = appendAuthArgs(args, j.creds())
 
 	// Lay files out under <downloadDir>/<format>/<container>/ so a per-job
 	// fragment cleanup can be scoped to that subdirectory and never touch a
@@ -1099,6 +1237,7 @@ type Server struct {
 func (s *Server) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /jobs", s.postJob)
+	mux.HandleFunc("POST /resolve", s.resolve)
 	mux.HandleFunc("DELETE /jobs/{id}", s.deleteJob)
 	mux.HandleFunc("GET /jobs", s.listJobs)
 	mux.HandleFunc("GET /events", s.events)
@@ -1132,6 +1271,152 @@ func (s *Server) postJob(w http.ResponseWriter, r *http.Request) {
 		"id":     j.ID,
 		"status": string(StatusQueued),
 	})
+}
+
+// resolve enumerates a (possibly playlist) URL without downloading anything:
+// it runs `yt-dlp --flat-playlist --dump-single-json` and reports whether the
+// URL is a playlist and, if so, its title and entry list. The web side calls
+// this before enqueueing so it can fan a playlist out into one job per entry.
+func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
+	var req ResolveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.URL == "" {
+		http.Error(w, "url is required", http.StatusBadRequest)
+		return
+	}
+
+	// Same treatment as run(): the /cookies mount is read-only but yt-dlp
+	// rewrites the jar on exit, so hand it a writable per-request temp copy.
+	if req.CookiesFile != "" {
+		tmp, err := materializeCookies(req.CookiesFile, "resolve")
+		if err != nil {
+			http.Error(w, "cookies: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer os.Remove(tmp)
+		req.CookiesFile = tmp
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+
+	args := buildResolveArgs(req)
+	slog.Info("resolving url", "url", req.URL, "args", redactArgs(args))
+	cmd := exec.CommandContext(ctx, s.cfg.YTDLPPath, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		if len(msg) > 1024 {
+			msg = msg[len(msg)-1024:]
+		}
+		slog.Warn("resolve failed", "url", req.URL, "err", msg)
+		http.Error(w, "resolve failed: "+msg, http.StatusBadGateway)
+		return
+	}
+
+	resp, err := parseResolveOutput(stdout.Bytes())
+	if err != nil {
+		slog.Warn("resolve parse failed", "url", req.URL, "err", err.Error())
+		http.Error(w, "resolve parse failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// buildResolveArgs constructs the yt-dlp command line for playlist enumeration:
+// dump a single flat JSON, no download, no progress noise.
+func buildResolveArgs(r ResolveRequest) []string {
+	args := []string{
+		"--no-color", "--no-progress", "--no-warnings",
+		"--flat-playlist", "--dump-single-json",
+		"--js-runtimes", "node",
+	}
+	if r.CookiesFile != "" {
+		args = append(args, "--cookies", r.CookiesFile)
+	}
+	args = appendAuthArgs(args, r.creds())
+	// User args last (before the URL), mirroring buildArgs, so a list-limiting
+	// flag like --playlist-items is honored while enumerating entries.
+	if len(r.ExtraArgs) > 0 {
+		args = append(args, r.ExtraArgs...)
+	}
+	args = append(args, r.URL)
+	return args
+}
+
+// parseResolveOutput turns `--dump-single-json` output into a ResolveResponse.
+// A document with a non-empty `entries` array is a playlist; anything else is a
+// single video (IsPlaylist=false, empty Entries).
+func parseResolveOutput(out []byte) (ResolveResponse, error) {
+	var info struct {
+		Type         string `json:"_type"`
+		Title        string `json:"title"`
+		WebpageURL   string `json:"webpage_url"`
+		OriginalURL  string `json:"original_url"`
+		Season       string `json:"season"`
+		SeasonNumber *int   `json:"season_number"`
+		Entries      []struct {
+			URL        string `json:"url"`
+			WebpageURL string `json:"webpage_url"`
+			ID         string `json:"id"`
+			Title      string `json:"title"`
+		} `json:"entries"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &info); err != nil {
+		return ResolveResponse{}, err
+	}
+	if len(info.Entries) == 0 {
+		// Single video. Hand back yt-dlp's canonical webpage_url so the caller
+		// can enqueue the real page instead of an opaque short link (matters for
+		// per-domain auth/cookies and identity de-dup). Fall back to
+		// original_url; empty if the extractor set neither.
+		canonical := strings.TrimSpace(info.WebpageURL)
+		if canonical == "" {
+			canonical = strings.TrimSpace(info.OriginalURL)
+		}
+		season := strings.TrimSpace(info.Season)
+		if season == "NA" {
+			season = ""
+		}
+		seasonNum := ""
+		if info.SeasonNumber != nil {
+			seasonNum = strconv.Itoa(*info.SeasonNumber)
+		}
+		return ResolveResponse{
+			IsPlaylist:   false,
+			CanonicalURL: canonical,
+			Title:        strings.TrimSpace(info.Title),
+			Season:       season,
+			SeasonNumber: seasonNum,
+		}, nil
+	}
+	entries := make([]ResolveEntry, 0, len(info.Entries))
+	for _, e := range info.Entries {
+		// `--flat-playlist` populates `url` with a re-feedable target; fall back
+		// to `webpage_url` for extractors that only set that.
+		u := strings.TrimSpace(e.URL)
+		if u == "" {
+			u = strings.TrimSpace(e.WebpageURL)
+		}
+		if u == "" {
+			continue
+		}
+		entries = append(entries, ResolveEntry{URL: u, ID: e.ID, Title: e.Title})
+	}
+	if len(entries) == 0 {
+		return ResolveResponse{IsPlaylist: false}, nil
+	}
+	return ResolveResponse{IsPlaylist: true, PlaylistTitle: info.Title, Entries: entries}, nil
 }
 
 func (s *Server) deleteJob(w http.ResponseWriter, r *http.Request) {

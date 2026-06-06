@@ -29,11 +29,40 @@ import { sha256File, insertHashIntoName, SHORT_HASH_LEN } from "./hash";
 import { formatKind } from "./formats";
 import { DOWNLOAD_DIR } from "./env";
 
-// Pick the MEGA destination path for a job by its format kind: audio-only
-// downloads land in the configured audio subfolder, everything else in the
-// main folder.
-function targetFolderPath(job: JobRow): string {
+// Sanitize an arbitrary string into a single MEGA folder segment. ensureFolder
+// splits paths on "/", so a slash (or control char) in a playlist title would
+// otherwise create unintended nested folders. Unicode (e.g. Japanese titles)
+// is preserved; only separators / control chars are neutralized.
+function sanitizeMegaSegment(name: string): string {
+  const cleaned = name
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f/\\]/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    // MEGA/most filesystems dislike leading dots and trailing dots/spaces.
+    .replace(/^\.+/, "")
+    .replace(/[. ]+$/, "")
+    .trim();
+  return cleaned.slice(0, 200).trim() || "playlist";
+}
+
+// Pick the MEGA destination path for a job:
+//   - playlist entries → <baseFolder>/playlists/<playlist title>/, plus a
+//     /<season>/ level when the job carries season metadata (audio and video
+//     alike, so a playlist/season stays together in one place);
+//   - audio-only       → the configured audio subfolder;
+//   - everything else  → the main folder.
+export function targetFolderPath(job: JobRow): string {
   const cfg = loadMegaConfig();
+  if (job.playlist_title && job.playlist_title.trim()) {
+    const base = cfg.folder.replace(/\/+$/, "");
+    let dir = `${base}/playlists/${sanitizeMegaSegment(job.playlist_title)}`;
+    const season = job.season?.trim();
+    if (season && season !== "NA") {
+      dir += `/${sanitizeMegaSegment(season)}`;
+    }
+    return dir;
+  }
   return formatKind(job.format) === "audio" ? cfg.audioFolder : cfg.folder;
 }
 
