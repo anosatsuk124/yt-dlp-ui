@@ -38,23 +38,35 @@ pub fn start(app: &AppHandle, sockets: &SocketPaths) -> Result<(), Box<dyn std::
 
     let bin = bin_dir(app);
     let web = web_dir(app);
-    let path_env = prepend_path(&bin);
+    // Tools (yt-dlp/ffmpeg/node) are bundled when the bin dir holds yt-dlp;
+    // otherwise the app uses the system ones (e.g. the Arch package depends on
+    // yt-dlp/ffmpeg/nodejs). The Go downloader defaults YTDLP_PATH to "yt-dlp"
+    // and inherits PATH, so it finds the system tools without extra env.
+    let tools_bundled = bin.join(tool_name("yt-dlp")).exists();
 
-    // Go downloader sidecar (REST + SSE over its own socket).
-    let (dl_rx, dl_child) = app
+    // Go downloader sidecar (REST + SSE over its own socket); our own binary,
+    // always installed next to the app.
+    let mut dl = app
         .shell()
         .sidecar("downloader")?
         .env("DOWNLOADER_SOCKET", sockets.dl.as_str())
         .env("DOWNLOAD_DIR", lossy(&downloads))
-        .env("COOKIES_DIR", lossy(&cookies))
-        .env("YTDLP_PATH", yt_dlp_path(&bin))
-        .env("PATH", path_env.as_str())
-        .spawn()?;
+        .env("COOKIES_DIR", lossy(&cookies));
+    if tools_bundled {
+        dl = dl
+            .env("YTDLP_PATH", lossy(&bin.join(tool_name("yt-dlp"))))
+            .env("PATH", prepend_path(&bin));
+    }
+    let (dl_rx, dl_child) = dl.spawn()?;
 
-    // Next.js server sidecar: `node server.js` inside the web resource dir.
-    let (web_rx, web_child) = app
-        .shell()
-        .sidecar("node")?
+    // Next.js server: `node server.js` in the web dir. Prefer the bundled node
+    // next to the app; fall back to the system node on PATH (Arch package).
+    let bundled_node = exe_dir().map(|d| d.join(tool_name("node")));
+    let node_cmd = match &bundled_node {
+        Some(p) if p.exists() => app.shell().sidecar("node")?,
+        _ => app.shell().command("node"),
+    };
+    let mut web_cmd = node_cmd
         .args(["server.js"])
         .current_dir(&web)
         .env("WEB_SOCKET", sockets.web.as_str())
@@ -63,9 +75,11 @@ pub fn start(app: &AppHandle, sockets: &SocketPaths) -> Result<(), Box<dyn std::
         .env("DOWNLOAD_DIR", lossy(&downloads))
         .env("COOKIES_DIR", lossy(&cookies))
         .env("CERTS_DIR", lossy(&certs))
-        .env("NODE_ENV", "production")
-        .env("PATH", path_env.as_str())
-        .spawn()?;
+        .env("NODE_ENV", "production");
+    if tools_bundled {
+        web_cmd = web_cmd.env("PATH", prepend_path(&bin));
+    }
+    let (web_rx, web_child) = web_cmd.spawn()?;
 
     app.state::<Children>()
         .0
@@ -161,19 +175,39 @@ fn lossy(p: &Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-// Probe the resource dir for `name` (e.g. "web"/"bin"), tolerating both the
-// flat (<resource>/name) and prefixed (<resource>/resources/name) layouts the
-// bundler may produce, by checking for a marker file inside the candidate.
+// Locate the directory containing `name` (e.g. "web"/"bin") across the layouts
+// we ship: next to the executable (system install at /usr/lib/yt-dlp-ui, or a
+// portable dir) and under the Tauri resource dir (deb/AppImage; flat or
+// resources/-prefixed). A marker file inside the candidate confirms the match.
 fn resource_subdir(app: &AppHandle, name: &str, marker: &str) -> PathBuf {
-    if let Ok(rd) = app.path().resource_dir() {
-        for cand in [rd.join(name), rd.join("resources").join(name)] {
-            if cand.join(marker).exists() {
-                return cand;
-            }
-        }
-        return rd.join(name);
+    let mut cands: Vec<PathBuf> = Vec::new();
+    if let Some(d) = exe_dir() {
+        cands.push(d.join(name));
     }
-    PathBuf::from(name)
+    if let Ok(rd) = app.path().resource_dir() {
+        cands.push(rd.join(name));
+        cands.push(rd.join("resources").join(name));
+    }
+    for c in &cands {
+        if c.join(marker).exists() {
+            return c.clone();
+        }
+    }
+    cands.into_iter().next().unwrap_or_else(|| PathBuf::from(name))
+}
+
+fn exe_dir() -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|p| p.to_path_buf()))
+}
+
+fn tool_name(base: &str) -> String {
+    if cfg!(windows) {
+        format!("{base}.exe")
+    } else {
+        base.to_string()
+    }
 }
 
 // Directory holding the built Next.js app (server.js + node_modules + .next +
@@ -194,11 +228,6 @@ fn bin_dir(app: &AppHandle) -> PathBuf {
     }
     let marker = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
     resource_subdir(app, "bin", marker)
-}
-
-fn yt_dlp_path(bin: &Path) -> String {
-    let name = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
-    bin.join(name).to_string_lossy().into_owned()
 }
 
 fn prepend_path(bin: &Path) -> String {
