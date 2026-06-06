@@ -120,6 +120,7 @@ export function useJobsWs(): { connected: boolean; jobs: JobRow[] } {
               content_hash: null,
               save_as: null,
               mega_remote_name: null,
+              mega_keep_local: null,
             });
           }
           flush();

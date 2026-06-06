@@ -31,6 +31,7 @@ interface MegaSettings {
   audioSubdir: string;
   hasPassword: boolean;
   maxParallel: number;
+  keepLocal: boolean;
 }
 
 const DEFAULT_MEGA: MegaSettings = {
@@ -41,6 +42,7 @@ const DEFAULT_MEGA: MegaSettings = {
   audioSubdir: "audio",
   hasPassword: false,
   maxParallel: 2,
+  keepLocal: false,
 };
 
 // Comparable snapshot of the saved settings — excludes password/hasPassword
@@ -56,6 +58,7 @@ interface SettingsSnapshot {
     folder: string;
     audioSubdir: string;
     maxParallel: number;
+    keepLocal: boolean;
   };
 }
 
@@ -77,6 +80,7 @@ function buildSnapshot(
       folder: mega.folder,
       audioSubdir: mega.audioSubdir,
       maxParallel: mega.maxParallel,
+      keepLocal: mega.keepLocal,
     },
   };
 }
@@ -109,7 +113,7 @@ export default function Page() {
         defaultCompat?: string;
         maxParallel?: number;
         downloadDir?: string;
-        mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string; audioSubdir?: string; maxParallel?: number };
+        mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string; audioSubdir?: string; maxParallel?: number; keepLocal?: boolean };
       }) => {
         const fmt = s.defaultFormat ? normalizeFormatKey(s.defaultFormat) : "best";
         const allowed = containersFor(formatKind(fmt));
@@ -131,6 +135,7 @@ export default function Page() {
             audioSubdir: s.mega.audioSubdir ?? "audio",
             hasPassword: !!s.mega.hasPassword,
             maxParallel: typeof s.mega.maxParallel === "number" ? s.mega.maxParallel : 2,
+            keepLocal: !!s.mega.keepLocal,
           });
         }
       })
@@ -236,6 +241,7 @@ export default function Page() {
             folder: mega.folder,
             audioSubdir: mega.audioSubdir,
             maxParallel: mega.maxParallel,
+            keepLocal: mega.keepLocal,
           },
         }),
       });
@@ -268,6 +274,7 @@ export default function Page() {
       folder: baseline.mega.folder,
       audioSubdir: baseline.mega.audioSubdir,
       maxParallel: baseline.mega.maxParallel,
+      keepLocal: baseline.mega.keepLocal,
       password: "",
     }));
   }
@@ -409,8 +416,9 @@ export default function Page() {
                   <div>
                     <Label className="text-base">MEGA upload</Label>
                     <p className="text-xs text-muted-foreground">
-                      When enabled, finished downloads are uploaded to MEGA and
-                      the local copy is deleted on success.
+                      When enabled, finished downloads are uploaded to MEGA.
+                      The local copy is deleted on success unless &ldquo;Keep
+                      local copy&rdquo; is on (or pinned per download).
                     </p>
                   </div>
                   <Button
@@ -492,6 +500,25 @@ export default function Page() {
                     takes effect immediately, lowering it kicks in as workers
                     finish their current upload.
                   </p>
+                </div>
+
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <Label className="text-sm">Keep local copy</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Keep the on-disk file after a successful MEGA upload
+                      instead of deleting it. The per-download toggle in the
+                      queue overrides this default.
+                    </p>
+                  </div>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={mega.keepLocal ? "default" : "outline"}
+                    onClick={() => setMega(m => ({ ...m, keepLocal: !m.keepLocal }))}
+                  >
+                    {mega.keepLocal ? "Keep" : "Delete"}
+                  </Button>
                 </div>
               </div>
 

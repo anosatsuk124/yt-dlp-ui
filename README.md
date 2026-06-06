@@ -33,7 +33,9 @@ behind a Tailscale sidecar so every device on your tailnet can use it.
 - History page with direct download links to the finished files.
 - Optional MEGA auto-upload: finished files are pushed to your MEGA Cloud
   Drive, the local copy is deleted, and the History row flips to a "MEGA"
-  badge. Audio downloads go to a configurable subfolder.
+  badge. Audio downloads go to a configurable subfolder. A **Keep local copy**
+  option (global default, or pinned per download in the queue form) uploads to
+  MEGA *without* removing the on-disk file.
 - **Maintenance / Update tasks.** A plugin-based migration system in *Settings*;
   each task previews the exact operations it will run (generated from the live
   database) in a modal before you confirm. Ships with a *Backfill content
@@ -215,10 +217,17 @@ local copy, and flip the History row to a "MEGA" badge.
    - Optionally set the **Audio subfolder** (default `audio`): audio-only
      downloads upload to `<destination folder>/<audio subfolder>` instead of
      the main folder.
+   - Optionally turn on **Keep local copy** to keep the on-disk file after a
+     successful upload instead of deleting it (default: delete).
    - **Save**.
 3. From now on, every job that reaches `completed` is queued for upload.
    The History page shows `MEGA queued` → `MEGA…` → `✓ MEGA`. Failures stay
    on local disk and surface as `MEGA failed` with the error in the tooltip.
+
+The queue form has a per-download **Keep local copy after MEGA upload**
+checkbox (shown when MEGA is enabled). It defaults to the global setting and
+applies to every URL in that batch, so you can keep just one download on disk
+while the rest are deleted after upload (or vice-versa).
 
 When you **Overwrite** an existing download, the old MEGA file is deleted
 (by name, permanently) before the replacement is re-uploaded. If that remote
