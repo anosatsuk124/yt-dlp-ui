@@ -61,6 +61,11 @@ jobs:
           # Required for tauri-action to create/update the GitHub Release and
           # upload the bundles + latest.json (permissions: contents: write above).
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The AppImage bundler runs linuxdeploy (itself an AppImage), which
+          # needs FUSE to mount — unavailable on GitHub-hosted Linux runners, so
+          # the bundle step fails with "failed to run linuxdeploy". Extracting
+          # and running instead of mounting avoids the FUSE dependency entirely.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
           # Updater signing key (REQUIRED for the in-app updater; separate from
           # OS code signing). OS signing is intentionally unset for now — the
           # artifacts are unsigned but updater-signed. To enable later, add the
