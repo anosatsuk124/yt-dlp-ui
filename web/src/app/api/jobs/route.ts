@@ -193,7 +193,7 @@ export async function POST(req: Request) {
       });
     } catch (e) {
       resolveError = (e as Error).message;
-      console.error(`[resolve] ${url}:`, resolveError);
+      console.error("[resolve]", { url, error: resolveError });
     }
     if (resolved?.isPlaylist && resolved.entries && resolved.entries.length > 0) {
       const playlistTitle = resolved.playlistTitle?.trim() || "playlist";

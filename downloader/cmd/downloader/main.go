@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -591,7 +592,7 @@ func (p *Pool) run(parentCtx context.Context, j Job) {
 	// that uses cookies. Copy the file to a per-job temp under /tmp,
 	// hand yt-dlp the temp path, and discard it on exit.
 	if j.CookiesFile != "" {
-		tmp, err := materializeCookies(j.CookiesFile, j.ID)
+		tmp, err := materializeCookies(j.CookiesFile, j.ID, p.cfg.CookiesDir)
 		if err != nil {
 			p.fail(j.ID, "cookies: "+err.Error())
 			return
@@ -1149,8 +1150,29 @@ func buildArgs(j Job, downloadDir string) []string {
 // can write back to it without touching the read-only canonical mount.
 // The temp filename embeds the job ID for traceability if cleanup ever
 // races (it shouldn't — the caller defers os.Remove).
-func materializeCookies(src, jobID string) (string, error) {
-	in, err := os.ReadFile(src)
+func materializeCookies(src, jobID, cookiesDir string) (string, error) {
+	srcAbs, err := filepath.Abs(src)
+	if err != nil {
+		return "", fmt.Errorf("cookies path: %w", err)
+	}
+	dirAbs, err := filepath.Abs(cookiesDir)
+	if err != nil {
+		return "", fmt.Errorf("cookies dir: %w", err)
+	}
+	realDir, err := filepath.EvalSymlinks(dirAbs)
+	if err != nil {
+		return "", fmt.Errorf("cookies dir: %w", err)
+	}
+	realSrc, err := filepath.EvalSymlinks(srcAbs)
+	if err != nil {
+		return "", fmt.Errorf("cookies path: %w", err)
+	}
+	rel, err := filepath.Rel(realDir, realSrc)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("cookies path outside cookies dir")
+	}
+
+	in, err := os.ReadFile(realSrc)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", src, err)
 	}
@@ -1291,7 +1313,7 @@ func (s *Server) resolve(w http.ResponseWriter, r *http.Request) {
 	// Same treatment as run(): the /cookies mount is read-only but yt-dlp
 	// rewrites the jar on exit, so hand it a writable per-request temp copy.
 	if req.CookiesFile != "" {
-		tmp, err := materializeCookies(req.CookiesFile, "resolve")
+		tmp, err := materializeCookies(req.CookiesFile, "resolve", s.cfg.CookiesDir)
 		if err != nil {
 			http.Error(w, "cookies: "+err.Error(), http.StatusInternalServerError)
 			return
