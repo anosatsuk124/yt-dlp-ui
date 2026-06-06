@@ -59,12 +59,22 @@ pub fn start(app: &AppHandle, sockets: &SocketPaths) -> Result<(), Box<dyn std::
     }
     let (dl_rx, dl_child) = dl.spawn()?;
 
-    // Next.js server: `node server.js` in the web dir. Prefer the bundled node
-    // next to the app; fall back to the system node on PATH (Arch package).
-    let bundled_node = exe_dir().map(|d| d.join(tool_name("node")));
-    let node_cmd = match &bundled_node {
-        Some(p) if p.exists() => app.shell().sidecar("node")?,
-        _ => app.shell().command("node"),
+    // Next.js server: `node server.js` in the web dir. Prefer a bundled node —
+    // the externalBin placed next to the app (deb/AppImage) or the copy in the
+    // bundled-tools dir — and fall back to the system node on PATH (Arch pkg,
+    // which depends on nodejs). Spawned by absolute path so it does not rely on
+    // the externalBin sidecar layout.
+    let node_name = tool_name("node");
+    let bundled_node = exe_dir()
+        .map(|d| d.join(&node_name))
+        .filter(|p| p.exists())
+        .or_else(|| {
+            let p = bin.join(&node_name);
+            p.exists().then_some(p)
+        });
+    let node_cmd = match bundled_node {
+        Some(path) => app.shell().command(path),
+        None => app.shell().command("node"),
     };
     let mut web_cmd = node_cmd
         .args(["server.js"])
