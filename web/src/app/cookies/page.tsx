@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTabState, TAB_KEYS } from "@/components/tab-state";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -26,7 +27,7 @@ export default function Page() {
   const { toast } = useToast();
   const [cookies, setCookies] = useState<CookieEntry[]>([]);
   const [loading, setLoading] = useState(true);
-  const [domain, setDomain] = useState("");
+  const [domain, setDomain] = useTabState<string>(TAB_KEYS.cookies.domain, "");
   const [submitting, setSubmitting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 

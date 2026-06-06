@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useTabState, useSeedOnce, TAB_KEYS } from "@/components/tab-state";
+import { useNavGuard, type NavGuard } from "@/components/nav-guard";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -41,19 +43,62 @@ const DEFAULT_MEGA: MegaSettings = {
   maxParallel: 2,
 };
 
+// Comparable snapshot of the saved settings — excludes password/hasPassword
+// (server-truth, not user input) so dirtiness compares only editable fields.
+interface SettingsSnapshot {
+  defaultFormat: FormatKey;
+  defaultContainer: ContainerKey;
+  defaultCompat: CompatKey;
+  maxParallel: number;
+  mega: {
+    enabled: boolean;
+    email: string;
+    folder: string;
+    audioSubdir: string;
+    maxParallel: number;
+  };
+}
+
+function buildSnapshot(
+  defaultFormat: FormatKey,
+  defaultContainer: ContainerKey,
+  defaultCompat: CompatKey,
+  maxParallel: number,
+  mega: MegaSettings,
+): SettingsSnapshot {
+  return {
+    defaultFormat,
+    defaultContainer,
+    defaultCompat,
+    maxParallel,
+    mega: {
+      enabled: mega.enabled,
+      email: mega.email,
+      folder: mega.folder,
+      audioSubdir: mega.audioSubdir,
+      maxParallel: mega.maxParallel,
+    },
+  };
+}
+
 export default function Page() {
   const { toast } = useToast();
-  const [defaultFormat, setDefaultFormat] = useState<FormatKey>("best");
-  const [defaultContainer, setDefaultContainer] = useState<ContainerKey>("auto");
-  const [defaultCompat, setDefaultCompat] = useState<CompatKey>("auto");
-  const [maxParallel, setMaxParallel] = useState(2);
-  const [mega, setMega] = useState<MegaSettings>(DEFAULT_MEGA);
-  const [loading, setLoading] = useState(true);
+  const { registerGuard } = useNavGuard();
+  const K = TAB_KEYS.settings;
+  const [defaultFormat, setDefaultFormat] = useTabState<FormatKey>(K.defaultFormat, "best");
+  const [defaultContainer, setDefaultContainer] = useTabState<ContainerKey>(K.defaultContainer, "auto");
+  const [defaultCompat, setDefaultCompat] = useTabState<CompatKey>(K.defaultCompat, "auto");
+  const [maxParallel, setMaxParallel] = useTabState<number>(K.maxParallel, 2);
+  const [mega, setMega] = useTabState<MegaSettings>(K.mega, DEFAULT_MEGA);
+  const [baseline, setBaseline] = useTabState<SettingsSnapshot | null>(K.baseline, null);
+  const [loading] = useTabState<boolean>(K.loading, true);
   const [submitting, setSubmitting] = useState(false);
 
   const allowedContainers = containersFor(formatKind(defaultFormat));
 
-  useEffect(() => {
+  // Seed from the server exactly once per provider lifetime. Re-running this on
+  // every remount would clobber edits the user made and then switched away from.
+  useSeedOnce(K.seed, store => {
     fetch("/api/settings")
       .then(r => r.json())
       .then((s: {
@@ -64,19 +109,17 @@ export default function Page() {
         mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string; audioSubdir?: string; maxParallel?: number };
       }) => {
         const fmt = s.defaultFormat ? normalizeFormatKey(s.defaultFormat) : "best";
-        setDefaultFormat(fmt);
         const allowed = containersFor(formatKind(fmt));
-        if (s.defaultContainer && isContainerKey(s.defaultContainer) && allowed.includes(s.defaultContainer)) {
-          setDefaultContainer(s.defaultContainer);
-        } else {
-          setDefaultContainer(allowed[0]);
-        }
-        if (s.defaultCompat && isCompatKey(s.defaultCompat)) {
-          setDefaultCompat(s.defaultCompat);
-        }
-        if (typeof s.maxParallel === "number") setMaxParallel(s.maxParallel);
+        const cont: ContainerKey =
+          s.defaultContainer && isContainerKey(s.defaultContainer) && allowed.includes(s.defaultContainer)
+            ? s.defaultContainer
+            : allowed[0];
+        store.set<FormatKey>(K.defaultFormat, fmt);
+        store.set<ContainerKey>(K.defaultContainer, cont);
+        if (s.defaultCompat && isCompatKey(s.defaultCompat)) store.set<CompatKey>(K.defaultCompat, s.defaultCompat);
+        if (typeof s.maxParallel === "number") store.set<number>(K.maxParallel, s.maxParallel);
         if (s.mega) {
-          setMega({
+          store.set<MegaSettings>(K.mega, {
             enabled: !!s.mega.enabled,
             email: s.mega.email ?? "",
             password: "",
@@ -88,8 +131,23 @@ export default function Page() {
         }
       })
       .catch(() => { /* leave defaults */ })
-      .finally(() => setLoading(false));
-  }, []);
+      .finally(() => {
+        // Capture whatever ended up in the store (server values or defaults) as
+        // the saved baseline for dirty-tracking.
+        const m = store.get<MegaSettings>(K.mega);
+        store.set<SettingsSnapshot>(
+          K.baseline,
+          buildSnapshot(
+            store.get<FormatKey>(K.defaultFormat),
+            store.get<ContainerKey>(K.defaultContainer),
+            store.get<CompatKey>(K.defaultCompat),
+            store.get<number>(K.maxParallel),
+            m,
+          ),
+        );
+        store.set<boolean>(K.loading, false);
+      });
+  });
 
   // When the format kind changes, keep the container valid for the new kind.
   function onDefaultFormatChange(fmt: FormatKey) {
@@ -98,23 +156,31 @@ export default function Page() {
     if (!allowed.includes(defaultContainer)) setDefaultContainer(allowed[0]);
   }
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  function isDirty(): boolean {
+    if (!baseline) return false;
+    if (mega.password !== "") return true;
+    return (
+      JSON.stringify(buildSnapshot(defaultFormat, defaultContainer, defaultCompat, maxParallel, mega)) !==
+      JSON.stringify(baseline)
+    );
+  }
+
+  async function saveSettings(): Promise<boolean> {
     if (!Number.isFinite(maxParallel) || maxParallel < 1 || maxParallel > 32) {
       toast({ title: "Invalid max parallel", description: "Must be 1–32." });
-      return;
+      return false;
     }
     if (mega.enabled && !mega.email) {
       toast({ title: "MEGA email required", description: "Provide an email or disable MEGA upload." });
-      return;
+      return false;
     }
     if (mega.enabled && !mega.hasPassword && !mega.password) {
       toast({ title: "MEGA password required", description: "Provide a password or disable MEGA upload." });
-      return;
+      return false;
     }
     if (!Number.isFinite(mega.maxParallel) || mega.maxParallel < 1 || mega.maxParallel > 8) {
       toast({ title: "Invalid MEGA max parallel", description: "Must be 1–8." });
-      return;
+      return false;
     }
     setSubmitting(true);
     try {
@@ -142,12 +208,56 @@ export default function Page() {
       if (mega.password) {
         setMega(m => ({ ...m, password: "", hasPassword: true }));
       }
+      setBaseline(buildSnapshot(defaultFormat, defaultContainer, defaultCompat, maxParallel, mega));
+      return true;
     } catch (err) {
       toast({ title: "Save failed", description: (err as Error).message });
+      return false;
     } finally {
       setSubmitting(false);
     }
   }
+
+  function discardSettings() {
+    if (!baseline) return;
+    setDefaultFormat(baseline.defaultFormat);
+    setDefaultContainer(baseline.defaultContainer);
+    setDefaultCompat(baseline.defaultCompat);
+    setMaxParallel(baseline.maxParallel);
+    setMega(m => ({
+      ...m,
+      enabled: baseline.mega.enabled,
+      email: baseline.mega.email,
+      folder: baseline.mega.folder,
+      audioSubdir: baseline.mega.audioSubdir,
+      maxParallel: baseline.mega.maxParallel,
+      password: "",
+    }));
+  }
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    await saveSettings();
+  }
+
+  // Point the nav guard at the latest closures without re-registering each
+  // render: the registered object calls through refs refreshed every render, so
+  // isDirty/save/discard always see current settings state (no stale closures).
+  const isDirtyRef = useRef(isDirty);
+  const saveRef = useRef(saveSettings);
+  const discardRef = useRef(discardSettings);
+  isDirtyRef.current = isDirty;
+  saveRef.current = saveSettings;
+  discardRef.current = discardSettings;
+  useEffect(() => {
+    const guard: NavGuard = {
+      isDirty: () => isDirtyRef.current(),
+      save: () => saveRef.current(),
+      discard: () => discardRef.current(),
+    };
+    registerGuard(guard);
+    return () => registerGuard(null);
+  }, [registerGuard]);
 
   return (
     <div className="space-y-6">
