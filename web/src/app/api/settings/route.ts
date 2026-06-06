@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { getSetting, setSetting } from "@/lib/db";
 import { patchConfig } from "@/lib/downloader";
-import { DEFAULT_MEGA_FOLDER } from "@/lib/mega";
+import { DEFAULT_MEGA_FOLDER, DEFAULT_AUDIO_SUBDIR } from "@/lib/mega";
 import { notifyMaxParallelChanged } from "@/lib/mega-uploader";
+import { isContainerKey } from "@/lib/containers";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +22,7 @@ interface MegaResponse {
   email: string;
   hasPassword: boolean;
   folder: string;
+  audioSubdir: string;
   maxParallel: number;
 }
 
@@ -31,6 +33,7 @@ export async function GET() {
     email: getSetting("mega_email") ?? "",
     hasPassword: megaPassword.length > 0,
     folder: getSetting("mega_folder") || DEFAULT_MEGA_FOLDER,
+    audioSubdir: getSetting("mega_audio_subdir") || DEFAULT_AUDIO_SUBDIR,
     maxParallel: parseInt(getSetting("mega_max_parallel") ?? "2", 10) || 2,
   };
   return NextResponse.json({
@@ -52,6 +55,7 @@ interface PutBody {
     email?: string;
     password?: string;
     folder?: string;
+    audioSubdir?: string;
     maxParallel?: number;
   };
 }
@@ -64,8 +68,7 @@ export async function PUT(req: Request) {
     setSetting("default_format", body.defaultFormat);
   }
   if (body.defaultContainer) {
-    const valid = new Set(["auto", "mp4", "mkv", "webm", "mov"]);
-    if (!valid.has(body.defaultContainer)) {
+    if (!isContainerKey(body.defaultContainer)) {
       return NextResponse.json({ error: "invalid defaultContainer" }, { status: 400 });
     }
     setSetting("default_container", body.defaultContainer);
@@ -100,6 +103,11 @@ export async function PUT(req: Request) {
     if (typeof m.folder === "string") {
       const cleaned = m.folder.trim() || DEFAULT_MEGA_FOLDER;
       setSetting("mega_folder", cleaned.startsWith("/") ? cleaned : `/${cleaned}`);
+    }
+    if (typeof m.audioSubdir === "string") {
+      // A single relative path segment (or nested) under the main folder.
+      const cleaned = m.audioSubdir.trim().replace(/^\/+|\/+$/g, "") || DEFAULT_AUDIO_SUBDIR;
+      setSetting("mega_audio_subdir", cleaned);
     }
     if (typeof m.maxParallel === "number" && m.maxParallel >= 1 && m.maxParallel <= 8) {
       setSetting("mega_max_parallel", String(m.maxParallel));

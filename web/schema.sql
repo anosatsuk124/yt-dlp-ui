@@ -2,6 +2,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   id           TEXT PRIMARY KEY,
   url          TEXT NOT NULL,
   format       TEXT NOT NULL,
+  container    TEXT,
+  compat       TEXT,
   extra_args   TEXT,
   cookies_file TEXT,
   status       TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','canceled')),
@@ -16,11 +18,17 @@ CREATE TABLE IF NOT EXISTS jobs (
   finished_at  INTEGER,
   mega_status      TEXT,
   mega_uploaded_at INTEGER,
-  mega_error       TEXT
+  mega_error       TEXT,
+  mega_progress    REAL NOT NULL DEFAULT 0,
+  mega_speed       TEXT,
+  content_hash     TEXT,
+  save_as          TEXT,
+  mega_remote_name TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_jobs_status  ON jobs(status);
-CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_status   ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_created  ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_identity ON jobs(url, format, container);
 
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,

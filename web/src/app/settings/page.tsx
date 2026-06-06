@@ -5,13 +5,20 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/use-toast";
-import { FORMATS, type FormatKey, isFormatKey } from "@/lib/formats";
-import { CONTAINERS, type ContainerKey, isContainerKey } from "@/lib/containers";
+import { FORMATS, type FormatKey, normalizeFormatKey, formatKind } from "@/lib/formats";
+import { CONTAINER_LABELS, containersFor, isContainerKey, type ContainerKey } from "@/lib/containers";
 import { COMPATS, type CompatKey, isCompatKey } from "@/lib/compat";
 
 const FORMAT_KEYS = Object.keys(FORMATS) as FormatKey[];
-const CONTAINER_KEYS = Object.keys(CONTAINERS) as ContainerKey[];
 const COMPAT_KEYS = Object.keys(COMPATS) as CompatKey[];
 
 interface MegaSettings {
@@ -19,6 +26,7 @@ interface MegaSettings {
   email: string;
   password: string; // never echoed from the server — bound only to the input
   folder: string;
+  audioSubdir: string;
   hasPassword: boolean;
   maxParallel: number;
 }
@@ -28,6 +36,7 @@ const DEFAULT_MEGA: MegaSettings = {
   email: "",
   password: "",
   folder: "/yt-dlp-ui",
+  audioSubdir: "audio",
   hasPassword: false,
   maxParallel: 2,
 };
@@ -42,6 +51,8 @@ export default function Page() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
+  const allowedContainers = containersFor(formatKind(defaultFormat));
+
   useEffect(() => {
     fetch("/api/settings")
       .then(r => r.json())
@@ -50,13 +61,15 @@ export default function Page() {
         defaultContainer?: string;
         defaultCompat?: string;
         maxParallel?: number;
-        mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string; maxParallel?: number };
+        mega?: { enabled?: boolean; email?: string; hasPassword?: boolean; folder?: string; audioSubdir?: string; maxParallel?: number };
       }) => {
-        if (s.defaultFormat && isFormatKey(s.defaultFormat)) {
-          setDefaultFormat(s.defaultFormat);
-        }
-        if (s.defaultContainer && isContainerKey(s.defaultContainer)) {
+        const fmt = s.defaultFormat ? normalizeFormatKey(s.defaultFormat) : "best";
+        setDefaultFormat(fmt);
+        const allowed = containersFor(formatKind(fmt));
+        if (s.defaultContainer && isContainerKey(s.defaultContainer) && allowed.includes(s.defaultContainer)) {
           setDefaultContainer(s.defaultContainer);
+        } else {
+          setDefaultContainer(allowed[0]);
         }
         if (s.defaultCompat && isCompatKey(s.defaultCompat)) {
           setDefaultCompat(s.defaultCompat);
@@ -68,6 +81,7 @@ export default function Page() {
             email: s.mega.email ?? "",
             password: "",
             folder: s.mega.folder ?? "/yt-dlp-ui",
+            audioSubdir: s.mega.audioSubdir ?? "audio",
             hasPassword: !!s.mega.hasPassword,
             maxParallel: typeof s.mega.maxParallel === "number" ? s.mega.maxParallel : 2,
           });
@@ -76,6 +90,13 @@ export default function Page() {
       .catch(() => { /* leave defaults */ })
       .finally(() => setLoading(false));
   }, []);
+
+  // When the format kind changes, keep the container valid for the new kind.
+  function onDefaultFormatChange(fmt: FormatKey) {
+    setDefaultFormat(fmt);
+    const allowed = containersFor(formatKind(fmt));
+    if (!allowed.includes(defaultContainer)) setDefaultContainer(allowed[0]);
+  }
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -108,9 +129,9 @@ export default function Page() {
           mega: {
             enabled: mega.enabled,
             email: mega.email,
-            // Empty string -> server keeps existing password.
             password: mega.password,
             folder: mega.folder,
+            audioSubdir: mega.audioSubdir,
             maxParallel: mega.maxParallel,
           },
         }),
@@ -118,7 +139,6 @@ export default function Page() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
       toast({ title: "Saved" });
-      // If user just typed a new password, treat it as stored from now on.
       if (mega.password) {
         setMega(m => ({ ...m, password: "", hasPassword: true }));
       }
@@ -151,7 +171,7 @@ export default function Page() {
                       type="button"
                       size="sm"
                       variant={defaultFormat === key ? "default" : "outline"}
-                      onClick={() => setDefaultFormat(key)}
+                      onClick={() => onDefaultFormatChange(key)}
                     >
                       {FORMATS[key].label}
                     </Button>
@@ -162,7 +182,7 @@ export default function Page() {
               <div className="space-y-2">
                 <Label>Default container</Label>
                 <div className="flex flex-wrap gap-2">
-                  {CONTAINER_KEYS.map(key => (
+                  {allowedContainers.map(key => (
                     <Button
                       key={key}
                       type="button"
@@ -170,13 +190,13 @@ export default function Page() {
                       variant={defaultContainer === key ? "default" : "outline"}
                       onClick={() => setDefaultContainer(key)}
                     >
-                      {CONTAINERS[key].label}
+                      {CONTAINER_LABELS[key]}
                     </Button>
                   ))}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Used when a job doesn't pick its own container. Auto keeps
-                  whatever yt-dlp's natural muxer picks.
+                  Pre-ticked in the queue form. Audio formats list codecs
+                  (MP3/WAV/FLAC); video formats list containers.
                 </p>
               </div>
 
@@ -198,7 +218,7 @@ export default function Page() {
                 </div>
                 <p className="text-xs text-muted-foreground">
                   {COMPATS[defaultCompat].hint} iOS overrides the container
-                  setting and always saves as MP4.
+                  setting and always saves video as MP4.
                 </p>
               </div>
 
@@ -269,8 +289,22 @@ export default function Page() {
                     placeholder="/yt-dlp-ui"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Absolute path inside your MEGA Cloud Drive. Created on
-                    first upload if missing.
+                    Absolute path inside your MEGA Cloud Drive. Video downloads
+                    go here; created on first upload if missing.
+                  </p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="mega-audio-subdir">Audio subfolder</Label>
+                  <Input
+                    id="mega-audio-subdir"
+                    value={mega.audioSubdir}
+                    onChange={e => setMega(m => ({ ...m, audioSubdir: e.target.value }))}
+                    placeholder="audio"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Audio-only downloads land in{" "}
+                    <code>{mega.folder.replace(/\/+$/, "")}/{mega.audioSubdir.replace(/^\/+|\/+$/g, "") || "audio"}</code>.
                   </p>
                 </div>
 
@@ -302,6 +336,166 @@ export default function Page() {
           )}
         </CardContent>
       </Card>
+
+      <MaintenanceCard />
     </div>
+  );
+}
+
+// --- Maintenance / Update --------------------------------------------------
+
+interface TaskInfo { id: string; title: string; description: string }
+interface OperationStep { id: string; description: string; jobId?: string }
+interface RunState {
+  taskId: string;
+  status: "running" | "done" | "error";
+  total: number;
+  done: number;
+  current: string | null;
+  log: string[];
+  error: string | null;
+}
+
+function MaintenanceCard() {
+  const { toast } = useToast();
+  const [tasks, setTasks] = useState<TaskInfo[]>([]);
+  const [active, setActive] = useState<TaskInfo | null>(null);
+  const [steps, setSteps] = useState<OperationStep[] | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [run, setRun] = useState<RunState | null>(null);
+
+  useEffect(() => {
+    fetch("/api/maintenance")
+      .then(r => r.json())
+      .then((d: { tasks: TaskInfo[]; run: RunState | null }) => {
+        setTasks(d.tasks ?? []);
+        if (d.run) setRun(d.run);
+      })
+      .catch(() => { /* ignore */ });
+  }, []);
+
+  // Poll run status while a task is running.
+  useEffect(() => {
+    if (!active || run?.status !== "running") return;
+    const t = setInterval(() => {
+      fetch(`/api/maintenance/${active.id}/status`)
+        .then(r => r.json())
+        .then((d: { run: RunState | null }) => { if (d.run) setRun(d.run); })
+        .catch(() => { /* ignore */ });
+    }, 1500);
+    return () => clearInterval(t);
+  }, [active, run?.status]);
+
+  async function openTask(task: TaskInfo) {
+    setActive(task);
+    setSteps(null);
+    setRun(null);
+    setPlanning(true);
+    try {
+      const r = await fetch(`/api/maintenance/${task.id}/plan`, { method: "POST" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d?.error ?? `HTTP ${r.status}`);
+      setSteps(d.steps ?? []);
+    } catch (e) {
+      toast({ title: "Plan failed", description: (e as Error).message });
+      setSteps([]);
+    } finally {
+      setPlanning(false);
+    }
+  }
+
+  async function runTask() {
+    if (!active) return;
+    try {
+      const r = await fetch(`/api/maintenance/${active.id}/run`, { method: "POST" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d?.error ?? `HTTP ${r.status}`);
+      setRun(d.run as RunState);
+    } catch (e) {
+      toast({ title: "Run failed", description: (e as Error).message });
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-lg">Maintenance / Update</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <p className="text-sm text-muted-foreground">
+          One-off migration and backfill tasks. Each opens a modal that lists
+          the exact operations it will perform — generated from the current
+          database — before you run it.
+        </p>
+        {tasks.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No tasks available.</p>
+        ) : (
+          tasks.map(t => (
+            <div key={t.id} className="flex items-start justify-between gap-4 rounded-md border p-3">
+              <div className="min-w-0">
+                <div className="text-sm font-medium">{t.title}</div>
+                <div className="text-xs text-muted-foreground">{t.description}</div>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => openTask(t)}>
+                Review &amp; run
+              </Button>
+            </div>
+          ))
+        )}
+      </CardContent>
+
+      <Dialog open={!!active} onOpenChange={o => { if (!o) { setActive(null); setSteps(null); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{active?.title}</DialogTitle>
+            <DialogDescription>{active?.description}</DialogDescription>
+          </DialogHeader>
+
+          <div>
+            <Label className="text-xs">
+              Operations to perform{steps ? ` (${steps.length})` : ""}
+            </Label>
+            <div className="mt-1 max-h-56 overflow-y-auto rounded-md border bg-card/30 p-2 text-xs">
+              {planning && <p className="text-muted-foreground">Planning…</p>}
+              {!planning && steps && steps.length === 0 && (
+                <p className="text-muted-foreground">Nothing to do — everything is up to date.</p>
+              )}
+              {!planning && steps?.map((s, i) => (
+                <div key={s.id} className="py-0.5">
+                  <span className="text-muted-foreground">{i + 1}.</span> {s.description}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {run && (
+            <div className="space-y-1">
+              <Label className="text-xs">
+                Progress: {run.done}/{run.total} — {run.status}
+                {run.current ? ` — ${run.current}` : ""}
+              </Label>
+              <div className="max-h-40 overflow-y-auto rounded-md border bg-black/40 p-2 font-mono text-[11px] leading-relaxed">
+                {run.log.slice(-200).map((line, i) => (
+                  <div key={i} className="whitespace-pre-wrap break-all">{line}</div>
+                ))}
+              </div>
+              {run.error && <p className="text-xs text-destructive">{run.error}</p>}
+            </div>
+          )}
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setActive(null); setSteps(null); }}>
+              Close
+            </Button>
+            <Button
+              onClick={runTask}
+              disabled={planning || !steps || steps.length === 0 || run?.status === "running"}
+            >
+              {run?.status === "running" ? "Running…" : "Run"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Card>
   );
 }

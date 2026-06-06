@@ -51,12 +51,17 @@ Funnel is disabled (`AllowFunnel: false`).
 
 ## Data flow for a job
 
-1. User pastes one or more URLs and picks a preset in the Queue page. The
-   browser `POST`s `/api/jobs` with `{ urls, format, extraArgs }`.
-2. The web service generates a UUID for each URL, resolves a per-domain
-   cookies file (if any), and inserts a `queued` row into `jobs` in SQLite.
+1. User pastes one or more URLs and ticks a format×container matrix in the
+   Queue page. The browser `POST`s `/api/jobs` with
+   `{ urls, selections: [{ format, containers[] }], compat, extraArgs }`.
+2. The web service expands the request to one combo per
+   `url × format × container`. For any combo whose identity (url+format+
+   container) already exists, it returns `409` with a conflict list unless a
+   `resolution` is supplied (append / overwrite / save-as / cancel). For each
+   combo it then generates a UUID, resolves a per-domain cookies file (if any),
+   and inserts a `queued` row into `jobs` in SQLite.
 3. The web service forwards each job to the downloader via
-   `POST /jobs { id, url, format, extraArgs, cookiesFile }`.
+   `POST /jobs { id, url, format, container, compat, outputName?, extraArgs, cookiesFile }`.
 4. The downloader enters the job in its in-memory registry, queues it on the
    worker pool, and immediately publishes a `status: queued` SSE event.
 5. A worker picks the job up, publishes `status: running`, builds the
@@ -71,10 +76,20 @@ Funnel is disabled (`AllowFunnel: false`).
 7. When the process exits, the downloader publishes a terminal `status`
    event (`completed` / `failed` / `canceled`). Terminal status transitions
    are persisted to SQLite **immediately**, not throttled.
-8. The browser sees the terminal `status` over WebSocket and drops the job
+8. On `completed`, the web service streams the finished file through sha256,
+   renames it to embed a `[#hash]` marker, records the full hash in `jobs`,
+   then (if enabled) enqueues the MEGA upload — strictly in that order.
+9. The browser sees the terminal `status` over WebSocket and drops the job
    from its active list; the History page picks it up on next load via
-   `GET /api/history`. The finished file sits in `./downloads` and is
-   streamed by `GET /api/files/:name`.
+   `GET /api/history`. The finished file sits under
+   `./downloads/<format>/<container>/` and is streamed by `GET /api/files/:name`.
+
+Files are laid out per `<format>/<container>` so the fragment cleanup that runs
+on a failed/canceled job (or an orphaned row on restart) can be scoped to that
+one subdirectory and only ever removes `.part`/`.ytdl`/fragment files — a
+sibling format of the same source (same `[id]`) lives in a different folder and
+is never touched. This is what fixes the old bug where downloading one URL in
+several formats deleted the earlier files.
 
 ## Schema
 
@@ -86,6 +101,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   id           TEXT PRIMARY KEY,
   url          TEXT NOT NULL,
   format       TEXT NOT NULL,
+  container    TEXT,
+  compat       TEXT,
   extra_args   TEXT,
   cookies_file TEXT,
   status       TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','canceled')),
@@ -100,11 +117,17 @@ CREATE TABLE IF NOT EXISTS jobs (
   finished_at  INTEGER,
   mega_status      TEXT,
   mega_uploaded_at INTEGER,
-  mega_error       TEXT
+  mega_error       TEXT,
+  mega_progress    REAL NOT NULL DEFAULT 0,
+  mega_speed       TEXT,
+  content_hash     TEXT,   -- sha256 of the finished file
+  save_as          TEXT,   -- custom output name (save-as conflict resolution)
+  mega_remote_name TEXT    -- basename uploaded to MEGA (for overwrite delete)
 );
 
-CREATE INDEX IF NOT EXISTS idx_jobs_status  ON jobs(status);
-CREATE INDEX IF NOT EXISTS idx_jobs_created ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_status   ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_created  ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_identity ON jobs(url, format, container);
 
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
@@ -208,7 +231,7 @@ If `web` restarts mid-download:
 
 | Host path | Mounted at | In which service | Notes |
 |---|---|---|---|
-| `./downloads` | `/downloads` | web (rw), downloader (rw) | Finished files. Flat layout. |
+| `./downloads` | `/downloads` | web (rw), downloader (rw) | Finished files, laid out as `<format>/<container>/Title [id] [#hash].ext`. |
 | `./cookies` | `/cookies` | web (rw), downloader (**ro**) | Per-domain Netscape cookie files. |
 | `./certs` | `/certs` | web (rw), downloader (**ro**) | PEM client certificates / private keys referenced by `auth_bindings.client_cert_file` / `client_cert_key_file`. |
 | `./data` | `/data` | web (rw) | SQLite database (`app.db`) plus WAL files. |

@@ -30,6 +30,9 @@ export interface JobRow {
   mega_speed: string | null;
   container: string | null;
   compat: string | null;
+  content_hash: string | null;
+  save_as: string | null;
+  mega_remote_name: string | null;
 }
 
 let _db: Database.Database | null = null;
@@ -68,6 +71,12 @@ function migrate(conn: Database.Database): void {
   if (!cols.has("mega_speed"))       conn.exec("ALTER TABLE jobs ADD COLUMN mega_speed TEXT");
   if (!cols.has("container"))        conn.exec("ALTER TABLE jobs ADD COLUMN container TEXT");
   if (!cols.has("compat"))           conn.exec("ALTER TABLE jobs ADD COLUMN compat TEXT");
+  if (!cols.has("content_hash"))     conn.exec("ALTER TABLE jobs ADD COLUMN content_hash TEXT");
+  if (!cols.has("save_as"))          conn.exec("ALTER TABLE jobs ADD COLUMN save_as TEXT");
+  if (!cols.has("mega_remote_name")) conn.exec("ALTER TABLE jobs ADD COLUMN mega_remote_name TEXT");
+
+  // Identity index for the pre-download conflict check (same url+format+container).
+  conn.exec("CREATE INDEX IF NOT EXISTS idx_jobs_identity ON jobs(url, format, container)");
 
   // The auth_bindings table is declared in schema.sql so a fresh DB picks it
   // up via the idempotent CREATE TABLE pass. Re-state it here so a DB that
@@ -93,11 +102,22 @@ function migrate(conn: Database.Database): void {
 
 // --- helpers ---------------------------------------------------------------
 
-export function insertJob(row: Omit<JobRow, "progress" | "speed" | "eta" | "title" | "file_path" | "error" | "started_at" | "finished_at" | "mega_status" | "mega_uploaded_at" | "mega_error" | "mega_progress" | "mega_speed">): void {
+export function insertJob(row: {
+  id: string;
+  url: string;
+  format: string;
+  container: string | null;
+  compat: string | null;
+  extra_args: string | null;
+  cookies_file: string | null;
+  status: JobStatus;
+  created_at: number;
+  save_as?: string | null;
+}): void {
   db().prepare(`
-    INSERT INTO jobs (id, url, format, container, compat, extra_args, cookies_file, status, created_at)
-    VALUES (@id, @url, @format, @container, @compat, @extra_args, @cookies_file, @status, @created_at)
-  `).run(row);
+    INSERT INTO jobs (id, url, format, container, compat, extra_args, cookies_file, status, created_at, save_as)
+    VALUES (@id, @url, @format, @container, @compat, @extra_args, @cookies_file, @status, @created_at, @save_as)
+  `).run({ save_as: null, ...row });
 }
 
 export function getJob(id: string): JobRow | undefined {
@@ -155,6 +175,49 @@ export function updateJobTitle(id: string, title: string): void {
 
 export function deleteJob(id: string): void {
   db().prepare("DELETE FROM jobs WHERE id = ?").run(id);
+}
+
+// Record the sha256 content hash and the (possibly renamed) final path of a
+// completed download. Called from server.ts right after hashing the file.
+export function updateJobHash(id: string, hash: string, filePath: string): void {
+  db().prepare(
+    "UPDATE jobs SET content_hash = ?, file_path = ? WHERE id = ?",
+  ).run(hash, filePath, id);
+}
+
+// Find a prior completed-or-uploaded download with the exact same identity
+// (url + format + container). Used for the pre-download conflict prompt and
+// for overwrite resolution. The newest such row wins.
+export function findExistingByIdentity(
+  url: string,
+  format: string,
+  container: string | null,
+): JobRow | undefined {
+  return db().prepare(`
+    SELECT * FROM jobs
+    WHERE url = @url AND format = @format
+      AND IFNULL(container, '') = IFNULL(@container, '')
+      AND (status = 'completed' OR mega_status = 'uploaded')
+    ORDER BY COALESCE(finished_at, created_at) DESC
+    LIMIT 1
+  `).get({ url, format, container: container ?? "" }) as JobRow | undefined;
+}
+
+// Completed/uploaded jobs that have no content hash yet — the backfill-hash
+// maintenance task re-downloads each to compute it.
+export function listJobsMissingHash(): JobRow[] {
+  return db().prepare(`
+    SELECT * FROM jobs
+    WHERE (content_hash IS NULL OR content_hash = '')
+      AND (status = 'completed' OR mega_status = 'uploaded')
+    ORDER BY COALESCE(finished_at, created_at) DESC
+  `).all() as JobRow[];
+}
+
+// Remember the basename we uploaded to MEGA so an overwrite/maintenance pass
+// can delete the right remote node later.
+export function setMegaRemoteName(id: string, name: string): void {
+  db().prepare("UPDATE jobs SET mega_remote_name = ? WHERE id = ?").run(name, id);
 }
 
 // Mark any rows still tagged 'running' or 'queued' as 'failed'. Called on

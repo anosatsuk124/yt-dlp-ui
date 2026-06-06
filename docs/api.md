@@ -27,8 +27,14 @@ Request:
 ```json
 {
   "urls": ["https://www.youtube.com/watch?v=…"],
-  "format": "best",
+  "selections": [
+    { "format": "best",       "containers": ["mp4", "mkv"] },
+    { "format": "audio-best", "containers": ["mp3", "flac"] }
+  ],
+  "compat": "auto",
   "extraArgs": "--write-subs --sub-lang \"en,en-US\"",
+  "resolution": "append",
+  "saveAsNames": { "https://…|best|mp4": "My custom name" },
   "auth": {
     "username": "me",
     "password": "secret",
@@ -45,9 +51,25 @@ Request:
 ```
 
 - `urls` (required): non-empty array. Each must match `^https?://`.
-- `format` (required): one of `"best" | "1080p" | "720p" | "audio"`.
+- `selections` (required): non-empty array of `{ format, containers[] }`. The
+  request expands to one job per `url × format × container`. `format` is one of
+  `"best" | "1080p" | "720p" | "audio-best"`. For video formats `containers`
+  are `"auto" | "mp4" | "mkv" | "webm" | "mov"`; for `audio-best` they are the
+  output codecs `"mp3" | "wav" | "flac"`. A format with an empty `containers`
+  list is skipped.
+- `compat` (optional): `"auto" | "ios"`. Applies to video formats only; audio
+  ignores it. `ios` forces MP4 + H.264/AAC.
 - `extraArgs` (optional): free-form string, shell-split server-side and
   appended to the `yt-dlp` argv. Unterminated quotes are a 400.
+- `resolution` (optional): how to resolve identity conflicts (same
+  url+format+container already completed/uploaded) — `"append"` (download
+  anyway; coexists via content hash), `"overwrite"` (delete the old entry
+  locally + on MEGA + its DB row, then re-download), `"save-as"` (keep the old
+  entry; the new download uses a custom name), `"cancel"` (skip the conflicting
+  combos). When omitted and a conflict exists, the request returns **409**
+  (see below) and creates nothing.
+- `saveAsNames` (optional): map of `"<url>|<format>|<container>"` → custom name,
+  used when `resolution` is `"save-as"`.
 - `auth` (optional): per-job credentials forwarded as the corresponding
   yt-dlp flags (`--username`, `--password`, `--twofactor`,
   `--video-password`, `--ap-mso`, `--ap-username`, `--ap-password`,
@@ -63,12 +85,31 @@ Request:
 Response (`201 Created`):
 
 ```json
-{ "jobs": [ { "id": "f1a4…-…-…", "url": "https://…" } ] }
+{
+  "jobs":    [ { "id": "f1a4…", "url": "https://…", "format": "best", "container": "mp4" } ],
+  "skipped": [ { "url": "https://…", "format": "best", "container": "mkv" } ]
+}
 ```
+
+Conflict (`409 Conflict`, only when `resolution` is omitted and an identity
+already exists):
+
+```json
+{
+  "conflicts": [
+    { "url": "https://…", "format": "best", "container": "mp4",
+      "existingId": "old-job-id", "title": "Sample video" }
+  ]
+}
+```
+
+The client re-submits the same body with a `resolution` (and `saveAsNames`
+when saving as) to proceed.
 
 Errors:
 
-- `400` — `no urls`, `invalid format`, `invalid url: …`, `invalid json`, or
+- `400` — `no urls`, `no selections`, `invalid format: …`,
+  `invalid container '…' for format '…'`, `invalid url: …`, `invalid json`, or
   a shell-split error message.
 - `502` — `downloader unreachable: …`. The job row is inserted then marked
   `failed` before the response is returned.
@@ -313,7 +354,9 @@ multipart/form-data`.
     "enabled": false,
     "email": "",
     "hasPassword": false,
-    "folder": "/yt-dlp-ui"
+    "folder": "/yt-dlp-ui",
+    "audioSubdir": "audio",
+    "maxParallel": 2
   }
 }
 ```
@@ -334,25 +377,45 @@ stored.
     "enabled": true,
     "email": "you@example.com",
     "password": "secret",
-    "folder": "/yt-dlp-ui"
+    "folder": "/yt-dlp-ui",
+    "audioSubdir": "audio",
+    "maxParallel": 2
   }
 }
 ```
 
 All top-level fields are optional. `maxParallel` must be an integer in
 `[1, 32]`. When set, the new value is persisted in SQLite and `PATCH /config`
-is forwarded to the downloader.
+is forwarded to the downloader. `defaultContainer` accepts any video container
+or audio codec key.
 
-For `mega`: any subset of `enabled` / `email` / `password` / `folder` may be
-sent. A missing or empty `password` keeps the previously stored value (so
-the UI can re-save other fields without re-typing). The `folder` is forced
-to start with `/`; if blank, it falls back to `/yt-dlp-ui`.
+For `mega`: any subset of `enabled` / `email` / `password` / `folder` /
+`audioSubdir` / `maxParallel` may be sent. A missing or empty `password` keeps
+the previously stored value (so the UI can re-save other fields without
+re-typing). The `folder` is forced to start with `/`; if blank, it falls back
+to `/yt-dlp-ui`. `audioSubdir` is a relative path under `folder` (default
+`audio`) where audio-only downloads are uploaded.
 
 A downloader failure returns `502 downloader: <message>`; otherwise:
 
 ```json
 { "ok": true }
 ```
+
+### Maintenance / Update tasks
+
+Source: `web/src/app/api/maintenance/**`, `web/src/lib/maintenance/**`.
+
+- `GET /api/maintenance` — `{ tasks: [{ id, title, description }], run | null }`.
+- `POST /api/maintenance/:id/plan` — runs the task's `plan()` against live
+  state and returns `{ task, steps: [{ id, description, jobId? }] }`. These are
+  exactly the lines the confirm modal shows.
+- `POST /api/maintenance/:id/run` — starts the task in the background
+  (`202`, or `409` if one is already running). Re-plans at start time.
+- `GET /api/maintenance/:id/status` — `{ run }` where `run` is
+  `{ taskId, status: "running"|"done"|"error", total, done, current, log[], error }`.
+
+Only one maintenance run executes at a time across all tasks.
 
 ### `WS /api/ws` — live progress fan-out
 
@@ -364,7 +427,7 @@ are emitted thereafter:
 { "type": "snapshot", "jobs": [ /* JobRow[], see /api/jobs */ ] }
 { "type": "progress", "id": "f1a4…", "progress": 42.5, "speed": "1.2MiB/s", "eta": "00:42", "downloaded": 1234567, "total": 9876543 }
 { "type": "status",   "id": "f1a4…", "status": "running" }
-{ "type": "status",   "id": "f1a4…", "status": "completed", "filePath": "/downloads/Sample [dQw4w9WgXcQ].mp4" }
+{ "type": "status",   "id": "f1a4…", "status": "completed", "filePath": "/downloads/best/mp4/Sample [dQw4w9WgXcQ].mp4" }
 { "type": "status",   "id": "f1a4…", "status": "failed", "error": "HTTP Error 403: Forbidden" }
 { "type": "title",    "id": "f1a4…", "title": "Sample video" }
 ```
@@ -388,6 +451,9 @@ caller in normal operation.
   "id": "f1a4…",
   "url": "https://…",
   "format": "1080p",
+  "container": "mp4",
+  "compat": "auto",
+  "outputName": "My custom name",
   "extraArgs": ["--write-subs"],
   "cookiesFile": "/cookies/example.com.txt",
   "username": "me",
@@ -403,12 +469,18 @@ caller in normal operation.
 }
 ```
 
-`id` and `url` are required. `format` is one of the preset keys; anything
-else is passed through verbatim to `yt-dlp -f`. The auth fields are flat
-on the `Job` struct (not nested); each non-empty value is appended as
-the corresponding `yt-dlp` flag in `buildArgs`. The downloader logs argv
-with the values of password-bearing flags replaced by `"***"`, so
-service logs never contain plaintext secrets. Response:
+`id` and `url` are required. `format` is one of the preset keys
+(`best | 1080p | 720p | audio-best`; the legacy `audio` is still accepted);
+anything else is passed through verbatim to `yt-dlp -f`. For video formats
+`container` maps to `--merge-output-format`; for audio formats it is the
+`--audio-format` codec (`mp3 | wav | flac`, default `mp3`). `outputName`, when
+set, replaces the title portion of the output filename (used by the "save as"
+conflict resolution). Files are written to
+`<downloads>/<format>/<container>/Title [id].ext` (the web side then appends a
+`[#hash]` marker). The auth fields are flat on the `Job` struct (not nested);
+each non-empty value is appended as the corresponding `yt-dlp` flag in
+`buildArgs`. The downloader logs argv with the values of password-bearing flags
+replaced by `"***"`, so service logs never contain plaintext secrets. Response:
 
 ```json
 { "id": "f1a4…", "status": "queued" }

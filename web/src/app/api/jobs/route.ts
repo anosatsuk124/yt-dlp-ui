@@ -1,11 +1,21 @@
 import { NextResponse } from "next/server";
 import { v4 as uuid } from "uuid";
-import { insertJob, listActiveJobs, getSetting } from "@/lib/db";
-import { isFormatKey, FormatKey } from "@/lib/formats";
-import { isContainerKey, ContainerKey } from "@/lib/containers";
-import { isCompatKey, CompatKey } from "@/lib/compat";
+import {
+  insertJob,
+  listActiveJobs,
+  getSetting,
+  deleteJob,
+  findExistingByIdentity,
+  updateJobStatus,
+  type JobRow,
+} from "@/lib/db";
+import { isFormatKey, formatKind, type FormatKey } from "@/lib/formats";
+import { isContainerValidFor, type ContainerKey } from "@/lib/containers";
+import { isCompatKey, type CompatKey } from "@/lib/compat";
 import { resolveCookiesFile } from "@/lib/cookies";
 import { postJob, shellSplit } from "@/lib/downloader";
+import { deleteCompletedEntry } from "@/lib/cleanup";
+import { deleteRemoteForJob } from "@/lib/mega-uploader";
 import {
   hasAny,
   mergeAuth,
@@ -20,13 +30,33 @@ import { CERTS_DIR } from "@/lib/env";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+type Resolution = "append" | "overwrite" | "save-as" | "cancel";
+
+interface Selection {
+  format: FormatKey;
+  containers: ContainerKey[];
+}
+
 interface EnqueueBody {
   urls: string[];
-  format: FormatKey;
-  container?: ContainerKey;
+  selections: Selection[];
   compat?: CompatKey;
   extraArgs?: string;
   auth?: Partial<AuthOptions>;
+  resolution?: Resolution;
+  saveAsNames?: Record<string, string>;
+}
+
+// A single concrete (url, format, container) download target.
+interface Combo {
+  url: string;
+  format: FormatKey;
+  container: ContainerKey;
+  kind: "video" | "audio";
+}
+
+function comboKey(url: string, format: string, container: string): string {
+  return `${url}|${format}|${container}`;
 }
 
 export async function POST(req: Request) {
@@ -39,20 +69,39 @@ export async function POST(req: Request) {
 
   const urls = (body.urls ?? []).map(s => s.trim()).filter(Boolean);
   if (urls.length === 0) return NextResponse.json({ error: "no urls" }, { status: 400 });
-  if (!isFormatKey(body.format)) return NextResponse.json({ error: "invalid format" }, { status: 400 });
-
-  // Container is optional; fall back to the saved default. Validate either way.
-  let container: ContainerKey;
-  if (body.container !== undefined) {
-    if (!isContainerKey(body.container)) {
-      return NextResponse.json({ error: "invalid container" }, { status: 400 });
+  for (const url of urls) {
+    if (!/^https?:\/\//.test(url)) {
+      return NextResponse.json({ error: `invalid url: ${url}` }, { status: 400 });
     }
-    container = body.container;
-  } else {
-    const fromSetting = getSetting("default_container") ?? "auto";
-    container = isContainerKey(fromSetting) ? fromSetting : "auto";
   }
 
+  // Validate and flatten the format×container selection matrix.
+  if (!Array.isArray(body.selections) || body.selections.length === 0) {
+    return NextResponse.json({ error: "no selections" }, { status: 400 });
+  }
+  const pairs: { format: FormatKey; container: ContainerKey; kind: "video" | "audio" }[] = [];
+  for (const sel of body.selections) {
+    if (!isFormatKey(sel.format)) {
+      return NextResponse.json({ error: `invalid format: ${String(sel.format)}` }, { status: 400 });
+    }
+    const kind = formatKind(sel.format);
+    const containers = Array.isArray(sel.containers) ? sel.containers : [];
+    if (containers.length === 0) continue; // format with no container chosen → skip
+    for (const c of containers) {
+      if (!isContainerValidFor(kind, c)) {
+        return NextResponse.json(
+          { error: `invalid container '${String(c)}' for format '${sel.format}'` },
+          { status: 400 },
+        );
+      }
+      pairs.push({ format: sel.format, container: c, kind });
+    }
+  }
+  if (pairs.length === 0) {
+    return NextResponse.json({ error: "no format/container combination selected" }, { status: 400 });
+  }
+
+  // Compat applies to video only; ios forces mp4 on the downloader side.
   let compat: CompatKey;
   if (body.compat !== undefined) {
     if (!isCompatKey(body.compat)) {
@@ -70,8 +119,7 @@ export async function POST(req: Request) {
     catch (e) { return NextResponse.json({ error: (e as Error).message }, { status: 400 }); }
   }
 
-  // Per-job auth override (twoFactor allowed; cert refs accepted as
-  // basenames and resolved against /certs).
+  // Per-job auth override (twoFactor allowed; cert refs resolved against /certs).
   const authOverride = sanitizeAuthPatch(body.auth, { allowTwoFactor: true });
   for (const k of ["clientCertFile", "clientCertKeyFile"] as const) {
     const v = authOverride[k];
@@ -87,48 +135,117 @@ export async function POST(req: Request) {
     authOverride[k] = resolved;
   }
 
-  const created: { id: string; url: string }[] = [];
+  // Build the full combo list across urls × pairs and look up existing
+  // (completed/uploaded) downloads with the same identity.
+  const combos: (Combo & { existing?: JobRow })[] = [];
+  for (const url of urls) {
+    for (const p of pairs) {
+      const existing = findExistingByIdentity(url, p.format, p.container);
+      combos.push({ url, format: p.format, container: p.container, kind: p.kind, existing });
+    }
+  }
+
+  const resolution = body.resolution;
+  const conflicts = combos.filter(c => c.existing);
+
+  // No resolution chosen yet and at least one identity already exists → ask
+  // the user how to proceed (append / overwrite / save-as / cancel). Nothing
+  // is created on this round.
+  if (conflicts.length > 0 && !resolution) {
+    return NextResponse.json(
+      {
+        conflicts: conflicts.map(c => ({
+          url: c.url,
+          format: c.format,
+          container: c.container,
+          existingId: c.existing!.id,
+          title: c.existing!.title ?? c.url,
+        })),
+      },
+      { status: 409 },
+    );
+  }
+
+  const saveAsNames = body.saveAsNames ?? {};
+  const created: { id: string; url: string; format: string; container: string }[] = [];
+  const skipped: { url: string; format: string; container: string }[] = [];
   const now = Date.now();
 
-  for (const url of urls) {
-    if (!/^https?:\/\//.test(url)) {
-      return NextResponse.json({ error: `invalid url: ${url}` }, { status: 400 });
+  for (const c of combos) {
+    // Conflict resolution for combos whose identity already exists.
+    let outputName: string | undefined;
+    if (c.existing) {
+      if (resolution === "cancel") {
+        skipped.push({ url: c.url, format: c.format, container: c.container });
+        continue;
+      }
+      if (resolution === "overwrite") {
+        // Delete the prior copy everywhere before re-downloading.
+        try {
+          if (c.existing.mega_status === "uploaded") {
+            await deleteRemoteForJob(c.existing).catch(e =>
+              console.error("[overwrite] remote delete failed:", (e as Error).message));
+          }
+          await deleteCompletedEntry(c.existing.file_path, c.existing.content_hash);
+        } catch (e) {
+          console.error("[overwrite] cleanup error:", (e as Error).message);
+        }
+        deleteJob(c.existing.id);
+      } else if (resolution === "save-as") {
+        const name = saveAsNames[comboKey(c.url, c.format, c.container)]?.trim();
+        if (name) outputName = name;
+        // existing row is kept; the new one lands under a different name.
+      }
+      // "append": existing kept; new download distinguished by its content hash.
     }
+
     const id = uuid();
-    const cookiesFile = resolveCookiesFile(url);
-    const binding = resolveAuthBinding(url);
+    const cookiesFile = resolveCookiesFile(c.url);
+    const binding = resolveAuthBinding(c.url);
     const auth = mergeAuth(binding, authOverride);
 
     insertJob({
-      id, url, format: body.format,
-      container,
-      compat,
+      id,
+      url: c.url,
+      format: c.format,
+      container: c.container,
+      compat: c.kind === "audio" ? null : compat,
       extra_args: extraArgs.length ? JSON.stringify(extraArgs) : null,
       cookies_file: cookiesFile,
       status: "queued",
       created_at: now,
+      save_as: outputName ?? null,
     });
+
+    // What we hand the downloader: audio sends its codec as the container;
+    // video sends a real container ("auto" → undefined so yt-dlp picks).
+    const dlContainer =
+      c.kind === "audio" ? c.container : c.container === "auto" ? undefined : c.container;
+    const dlCompat = c.kind === "audio" ? undefined : compat === "auto" ? undefined : compat;
 
     try {
       await postJob({
-        id, url,
-        format: body.format,
-        container: container === "auto" ? undefined : container,
-        compat: compat === "auto" ? undefined : compat,
+        id,
+        url: c.url,
+        format: c.format,
+        container: dlContainer,
+        compat: dlCompat,
+        outputName,
         extraArgs,
         cookiesFile: cookiesFile ?? undefined,
         auth: auth && hasAny(auth) ? auth : undefined,
       });
     } catch (e) {
-      // Downloader unreachable — mark the row as failed so the user sees it.
-      const { updateJobStatus } = await import("@/lib/db");
       updateJobStatus(id, "failed", { error: (e as Error).message, finished_at: Date.now() });
-      return NextResponse.json({ error: `downloader unreachable: ${(e as Error).message}` }, { status: 502 });
+      return NextResponse.json(
+        { error: `downloader unreachable: ${(e as Error).message}`, created },
+        { status: 502 },
+      );
     }
-    created.push({ id, url });
+    created.push({ id, url: c.url, format: c.format, container: c.container });
   }
 
-  return NextResponse.json({ jobs: created }, { status: 201 });
+  return NextResponse.json({ jobs: created, skipped }, { status: 201 });
 }
 
 export async function GET() {

@@ -14,21 +14,31 @@ export interface MegaConfig {
   enabled: boolean;
   email: string;
   password: string;
-  folder: string;
+  folder: string;       // destination for video downloads
+  audioFolder: string;  // destination for audio-only downloads (folder/<audioSubdir>)
 }
 
 export const DEFAULT_MEGA_FOLDER = "/yt-dlp-ui";
+export const DEFAULT_AUDIO_SUBDIR = "audio";
+
+function joinMegaPath(folder: string, sub: string): string {
+  const f = folder.replace(/\/+$/, "");
+  const s = sub.replace(/^\/+|\/+$/g, "");
+  return s ? `${f}/${s}` : f;
+}
 
 export function loadMegaConfig(): MegaConfig {
   const enabled = getSetting("mega_enabled") === "true";
   const email = getSetting("mega_email") ?? "";
   const password = getSetting("mega_password") ?? "";
   const folder = getSetting("mega_folder") || DEFAULT_MEGA_FOLDER;
+  const audioSub = getSetting("mega_audio_subdir") || DEFAULT_AUDIO_SUBDIR;
   return {
     enabled: enabled && !!email && !!password,
     email,
     password,
     folder,
+    audioFolder: joinMegaPath(folder, audioSub),
   };
 }
 
@@ -120,6 +130,68 @@ export class MegaClient {
       if (signal) signal.removeEventListener("abort", onAbortDestroy);
     }
     if (signal?.aborted) throw new Error("aborted");
+  }
+
+  // Delete a file node by name directly under the given folder node. Returns
+  // true if a node was found and deletion was requested. Used for overwrite /
+  // maintenance passes that must replace an already-uploaded remote file.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async deleteByName(folderNode: any, name: string): Promise<boolean> {
+    if (!this.storage) throw new Error("mega client not connected");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const target = (folderNode.children ?? []).find(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (c: any) => !c.directory && c.name === name,
+    );
+    if (!target) return false;
+    await target.delete(true); // permanent delete (skip Rubbish Bin)
+    return true;
+  }
+
+  // Find a file node (not a folder) by name directly under a folder node.
+  // Returns the node or null. Same lookup pattern as deleteByName.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  findFile(folderNode: any, name: string): any | null {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (folderNode.children ?? []).find(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (c: any) => !c.directory && c.name === name,
+    ) ?? null;
+  }
+
+  // Stream a remote file node's content to a local path. Resolves when the
+  // write finishes. `onProgress`, if given, receives (downloaded, total).
+  async downloadFile(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    node: any,
+    destPath: string,
+    onProgress?: (downloaded: number, total: number) => void,
+  ): Promise<void> {
+    if (!this.storage) throw new Error("mega client not connected");
+    const total = typeof node.size === "number" ? node.size : 0;
+    await new Promise<void>((resolve, reject) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const dl: any = node.download({ maxConnections: 4 });
+      const out = fs.createWriteStream(destPath);
+      if (onProgress) {
+        dl.on("progress", (e: { bytesLoaded?: number; bytesTotal?: number }) => {
+          onProgress(e.bytesLoaded ?? 0, e.bytesTotal ?? total);
+        });
+      }
+      dl.on("error", reject);
+      out.on("error", reject);
+      out.on("finish", () => resolve());
+      dl.pipe(out);
+    });
+  }
+
+  // Rename a remote node in place — updates the name attribute only, no bytes
+  // are re-uploaded. Used to embed the content hash into an already-uploaded
+  // file's name without re-transferring it.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async renameFile(node: any, newName: string): Promise<void> {
+    if (!this.storage) throw new Error("mega client not connected");
+    await node.rename(newName);
   }
 
   async disconnect(): Promise<void> {

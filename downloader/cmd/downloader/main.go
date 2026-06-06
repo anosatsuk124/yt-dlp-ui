@@ -50,6 +50,11 @@ type Job struct {
 	ExtraArgs   []string `json:"extraArgs,omitempty"`
 	CookiesFile string   `json:"cookiesFile,omitempty"`
 
+	// OutputName, when non-empty, replaces the %(title)s portion of the
+	// output filename template (used by the "save as" conflict resolution so
+	// a re-download lands under a user-chosen name instead of the video title).
+	OutputName string `json:"outputName,omitempty"`
+
 	// yt-dlp authentication. Every field is optional; non-empty values are
 	// appended as their corresponding flag in buildArgs.
 	Username           string `json:"username,omitempty"`
@@ -352,6 +357,13 @@ func (p *Pool) resize(n int) {
 	if n < 1 {
 		n = 1
 	}
+	// No-op if unchanged. Restarting the worker set cancels the workersCtx,
+	// which would SIGINT any in-flight job; the web service re-asserts the
+	// saved parallelism on every SSE (re)connect, so without this guard a
+	// plain web reconnect would needlessly kill running downloads.
+	if n == p.maxParallel {
+		return
+	}
 	slog.Info("resizing worker pool", "from", p.maxParallel, "to", n)
 
 	// Stop current workers (does not cancel in-flight jobs themselves; they
@@ -598,6 +610,17 @@ func (p *Pool) handleStdoutLine(id, line string, errBuf *rollingBuf, filePath *a
 		return
 	}
 
+	// Authoritative final path, emitted after post-processing + move. Fires
+	// later than DEST_PROBE, so it correctly overrides the source-extension
+	// path for audio extraction and remux.
+	if strings.HasPrefix(line, "FINAL_PROBE:") {
+		fp := strings.TrimSpace(strings.TrimPrefix(line, "FINAL_PROBE:"))
+		if fp != "" && fp != "NA" {
+			filePath.Store(fp)
+		}
+		return
+	}
+
 	// PROGRESS <down>/<total> <speed_bps> <eta_sec> <frag_idx>/<frag_count> <status>
 	if strings.HasPrefix(line, "PROGRESS ") {
 		fields := strings.Fields(line)
@@ -751,7 +774,7 @@ func formatETASeconds(s string) string {
 func formatSelector(format, compat string) string {
 	ios := compat == "ios"
 	switch format {
-	case "audio":
+	case "audio", "audio-best":
 		return "ba/b"
 	case "1080p":
 		if ios {
@@ -782,6 +805,36 @@ func formatSelector(format, compat string) string {
 	}
 }
 
+// isAudioFormat reports whether a format key denotes an audio-only download.
+// Accepts the legacy "audio" key alongside the "audio-best" preset.
+func isAudioFormat(format string) bool {
+	return format == "audio" || strings.HasPrefix(format, "audio-")
+}
+
+// sanitizeSegment makes a string safe to use as a single path segment:
+// anything outside [A-Za-z0-9._-] becomes '_'. Keeps known format/container
+// keys intact while defending against a hostile save-as name.
+func sanitizeSegment(s string) string {
+	if s == "" {
+		return "_"
+	}
+	b := make([]rune, 0, len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '-', r == ' ':
+			b = append(b, r)
+		default:
+			b = append(b, '_')
+		}
+	}
+	out := strings.TrimSpace(string(b))
+	if out == "" {
+		return "_"
+	}
+	return out
+}
+
 // buildArgs constructs the yt-dlp command line for a job.
 func buildArgs(j Job, downloadDir string) []string {
 	args := []string{
@@ -805,25 +858,46 @@ func buildArgs(j Job, downloadDir string) []string {
 		// Same idea for the output path. The new yt-dlp + --progress-template
 		// combo suppresses the standard `[download] Destination: …` line,
 		// which is how we used to capture the filename for cleanup-on-
-		// cancel. Probe it explicitly here instead.
+		// cancel. Probe it explicitly here instead. This is the SOURCE path
+		// (pre-postprocessing) so for audio extraction / remux it has the
+		// wrong extension — used only as an early hint / cleanup fallback.
 		"--print", "before_dl:DEST_PROBE:%(filename)s",
+		// The authoritative final path, emitted AFTER all post-processing and
+		// the move to the destination. %(filepath)s reflects the real
+		// extension (e.g. .mp3/.flac for -x, the merged .mp4 for a remux), so
+		// this is what the web side hashes and uploads. yt-dlp does not print
+		// `[ExtractAudio] Destination:` to stdout under --print, so without
+		// this the captured path would keep the source container's extension.
+		"--print", "after_move:FINAL_PROBE:%(filepath)s",
 	}
 
 	formatLower := strings.ToLower(j.Format)
 	compatLower := strings.ToLower(j.Compat)
+	containerLower := strings.ToLower(j.Container)
+	audio := isAudioFormat(formatLower)
 	args = append(args, "-f", formatSelector(formatLower, compatLower))
 
-	// Output container preference. "auto" / empty leaves yt-dlp to pick its
-	// natural container (typically mp4 for HLS, may end up webm/mkv for
-	// other sources). Anything else maps to --merge-output-format, which
-	// container-only re-muxes the merged stream — no full re-encode unless
-	// the codec is fundamentally incompatible.
-	//
-	// Compat=ios overrides any container choice — iOS MEGA / Photos UIs
-	// expect an .mp4 wrapper around H.264 + AAC, so we always merge into
-	// mp4 there regardless of the picker setting.
-	if formatLower != "audio" {
-		container := strings.ToLower(j.Container)
+	if audio {
+		// Audio-only: extract and transcode into the chosen codec. The
+		// container slot carries the codec (mp3/wav/flac); default to mp3.
+		codec := containerLower
+		switch codec {
+		case "mp3", "wav", "flac":
+			// ok
+		default:
+			codec = "mp3"
+		}
+		args = append(args, "-x", "--audio-format", codec)
+	} else {
+		// Output container preference. "auto" / empty leaves yt-dlp to pick
+		// its natural container. Anything else maps to --merge-output-format,
+		// which container-only re-muxes the merged stream — no full re-encode
+		// unless the codec is fundamentally incompatible.
+		//
+		// Compat=ios overrides any container choice — iOS MEGA / Photos UIs
+		// expect an .mp4 wrapper around H.264 + AAC, so we always merge into
+		// mp4 there regardless of the picker setting.
+		container := containerLower
 		if compatLower == "ios" {
 			container = "mp4"
 		}
@@ -833,10 +907,6 @@ func buildArgs(j Job, downloadDir string) []string {
 		case "mp4", "mkv", "webm", "mov":
 			args = append(args, "--merge-output-format", container)
 		}
-	}
-	if formatLower == "audio" {
-		// keep existing audio behaviour: extract + transcode to mp3.
-		args = append(args, "-x", "--audio-format", "mp3")
 	}
 
 	if j.CookiesFile != "" {
@@ -876,7 +946,34 @@ func buildArgs(j Job, downloadDir string) []string {
 		args = append(args, "--client-certificate-password", j.ClientCertPassword)
 	}
 
-	args = append(args, "-o", downloadDir+"/%(title).200B [%(id)s].%(ext)s")
+	// Lay files out under <downloadDir>/<format>/<container>/ so a per-job
+	// fragment cleanup can be scoped to that subdirectory and never touch a
+	// sibling format's finished file (same source [id], different folder).
+	subDir := sanitizeSegment(formatLower)
+	containerSeg := containerLower
+	if !audio && (containerSeg == "") {
+		containerSeg = "auto"
+	}
+	if !audio && compatLower == "ios" {
+		containerSeg = "mp4"
+	}
+	if audio {
+		switch containerSeg {
+		case "mp3", "wav", "flac":
+		default:
+			containerSeg = "mp3"
+		}
+	}
+	destDir := downloadDir + "/" + subDir + "/" + sanitizeSegment(containerSeg)
+
+	// The name portion: the video title by default, or a user-supplied name
+	// (save-as conflict resolution). The [%(id)s] block is preserved either
+	// way so cleanup/identity logic that keys off the source id still works.
+	namePart := "%(title).200B [%(id)s]"
+	if j.OutputName != "" {
+		namePart = sanitizeSegment(j.OutputName) + " [%(id)s]"
+	}
+	args = append(args, "-o", destDir+"/"+namePart+".%(ext)s")
 
 	if len(j.ExtraArgs) > 0 {
 		args = append(args, j.ExtraArgs...)
@@ -916,13 +1013,13 @@ func materializeCookies(src, jobID string) (string, error) {
 // argv is logged we replace the next slice element after one of these
 // with "***" so credentials never land in service logs.
 var sensitiveArgFlags = map[string]struct{}{
-	"-p":                              {},
-	"--password":                      {},
-	"-2":                              {},
-	"--twofactor":                     {},
-	"--video-password":                {},
-	"--ap-password":                   {},
-	"--client-certificate-password":   {},
+	"-p":                            {},
+	"--password":                    {},
+	"-2":                            {},
+	"--twofactor":                   {},
+	"--video-password":              {},
+	"--ap-password":                 {},
+	"--client-certificate-password": {},
 }
 
 // redactArgs returns a copy of args with the value following any sensitive

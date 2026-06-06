@@ -9,8 +9,23 @@ behind a Tailscale sidecar so every device on your tailnet can use it.
 ## Features
 
 - Queue URLs from any browser; jobs run with a configurable parallelism limit.
-- Quality presets: **Best**, **1080p**, **720p**, **Audio (mp3)**, plus a
-  free-form "advanced args" field that's shell-split and forwarded to `yt-dlp`.
+- **Format × container matrix.** Pick any number of containers under any number
+  of formats in one shot — e.g. *Best → MP4, MKV* **and** *Audio → MP3, FLAC*
+  enqueues four independent downloads. Video formats (**Best / 1080p / 720p**)
+  remux into **MP4/MKV/WebM/MOV** (or Auto); audio extracts into **MP3/WAV/FLAC**.
+  A free-form "advanced args" field is shell-split and forwarded to `yt-dlp`.
+- **Content-hash identity.** Every finished file is sha256-hashed; the short
+  hash is embedded in the filename (`Title [id] [#abc12345].mp4`) and the full
+  hash is recorded in the database, so re-downloads never silently clobber a
+  prior file.
+- **Per-format/container directory layout.** Files are stored under
+  `<downloads>/<format>/<container>/`, which isolates each job's yt-dlp
+  fragments — downloading the same URL in several formats no longer deletes the
+  earlier files during fragment cleanup.
+- **Pre-download conflict prompt.** Re-requesting the same URL + format +
+  container surfaces a modal: **Append** (keep both, distinguished by hash),
+  **Overwrite** (delete the old entry locally and on MEGA, then re-download),
+  **Save as…** (keep the old one, save the new under a custom name), or **Skip**.
 - Per-domain `cookies.txt` upload, matched to a job's URL automatically
   (exact host first, then progressively shorter parent domains).
 - Real-time progress (percent / speed / ETA) over WebSocket; reconnects with
@@ -18,7 +33,11 @@ behind a Tailscale sidecar so every device on your tailnet can use it.
 - History page with direct download links to the finished files.
 - Optional MEGA auto-upload: finished files are pushed to your MEGA Cloud
   Drive, the local copy is deleted, and the History row flips to a "MEGA"
-  badge.
+  badge. Audio downloads go to a configurable subfolder.
+- **Maintenance / Update tasks.** A plugin-based migration system in *Settings*;
+  each task previews the exact operations it will run (generated from the live
+  database) in a modal before you confirm. Ships with a *Backfill content
+  hashes* task that hashes pre-existing downloads (re-downloading MEGA-only ones).
 - Optional Tailscale sidecar: the UI is reachable only inside your tailnet
   (Tailscale Funnel is **explicitly disabled**).
 
@@ -125,20 +144,49 @@ local copy, and flip the History row to a "MEGA" badge.
    - Click the toggle to **Enabled**.
    - Fill in **Email**, **Password**, and **Destination folder** (default
      `/yt-dlp-ui`, created on first upload if missing).
+   - Optionally set the **Audio subfolder** (default `audio`): audio-only
+     downloads upload to `<destination folder>/<audio subfolder>` instead of
+     the main folder.
    - **Save**.
 3. From now on, every job that reaches `completed` is queued for upload.
    The History page shows `MEGA queued` → `MEGA…` → `✓ MEGA`. Failures stay
    on local disk and surface as `MEGA failed` with the error in the tooltip.
 
+When you **Overwrite** an existing download, the old MEGA file is deleted
+(by name, permanently) before the replacement is re-uploaded. If that remote
+delete fails it is logged and the upload still proceeds, so a stale duplicate
+may remain — check the destination folder if in doubt.
+
 Credentials are stored in the SQLite settings table at `${HOST_DATA_DIR}/app.db`
 in plaintext, so treat that file like any other secret. No public share
 link is generated — access the file by logging into MEGA.
+
+## Maintenance / Update tasks
+
+Schema and storage changes sometimes need a one-off backfill over existing
+rows. The **Maintenance / Update** card in *Settings* hosts these as plugins.
+Each task's **Review & run** button opens a modal that first calls the task's
+`plan()` — which inspects the current database and returns the exact list of
+operations it would perform — and renders those lines verbatim. Nothing runs
+until you press **Run**; progress and a live log stream into the same modal.
+
+Shipped task:
+
+- **Backfill content hashes** — finds completed/uploaded downloads with no
+  recorded sha256. Files still on disk are hashed in place. Files already on
+  MEGA are downloaded just long enough to compute the hash, then their MEGA copy
+  is **renamed in place** to embed the `[#hash]` marker (no bytes are
+  re-uploaded). Only files missing from both disk and MEGA are re-downloaded
+  from the source URL.
+
+To add a migration, implement `MaintenanceTask` in `web/src/lib/maintenance/`
+and register it in `registry.ts`; it then appears in the same modal.
 
 ## Storage
 
 | Host path | Mounted at | Contents |
 |---|---|---|
-| `./downloads` | `/downloads` (both containers) | Finished media files (flat layout). |
+| `./downloads` | `/downloads` (both containers) | Finished media files, laid out as `<format>/<container>/Title [id] [#hash].ext`. |
 | `./cookies`   | `/cookies` (read-only in downloader) | Per-domain `<domain>.txt` files. |
 | `./data`      | `/data` (web only) | `app.db` — the SQLite database. |
 | `./tailscale-state` | `/var/lib/tailscale` (Tailscale only) | Tailscale node state. |

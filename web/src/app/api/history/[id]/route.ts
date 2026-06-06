@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
+import fs from "node:fs";
 import { getJob, deleteJob } from "@/lib/db";
-import { cleanupByIdBracket } from "@/lib/cleanup";
+import { cleanupFragments } from "@/lib/cleanup";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,10 +35,13 @@ export async function DELETE(_req: Request, { params }: { params: { id: string }
     );
   }
 
-  // Sweep the final file plus any leftover .part / .ytdl / *.part-Frag*
-  // by matching the [id] bracket in the captured destination path.
-  // Best-effort: missing files are fine, we still want the row gone.
-  cleanupByIdBracket(job.file_path);
+  // Delete this row's own finished file (exact path — no bracket-wide sweep,
+  // so a sibling format of the same source is never collaterally removed),
+  // then sweep any leftover fragments in the same per-job subdir.
+  if (job.file_path) {
+    try { fs.unlinkSync(job.file_path); } catch { /* already gone — fine */ }
+    cleanupFragments(job.file_path);
+  }
 
   deleteJob(params.id);
   return new NextResponse(null, { status: 204 });

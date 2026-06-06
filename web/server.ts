@@ -7,20 +7,24 @@ import { parse } from "node:url";
 import next from "next";
 import { WebSocketServer } from "ws";
 
+import fs from "node:fs";
 import { register, broadcast } from "./src/lib/ws-hub";
 import {
   listActiveJobs,
   updateJobStatus,
   updateJobProgress,
   updateJobTitle,
+  updateJobHash,
   markMegaPending,
   reconcileOrphans,
+  getSetting,
 } from "./src/lib/db";
 import { DOWNLOADER_URL } from "./src/lib/env";
-import { getJobs as getDownloaderJobs } from "./src/lib/downloader";
-import { cleanupByIdBracket } from "./src/lib/cleanup";
+import { getJobs as getDownloaderJobs, patchConfig } from "./src/lib/downloader";
+import { cleanupFragments, resolveActualFile } from "./src/lib/cleanup";
+import { sha256File, insertHashIntoName, SHORT_HASH_LEN } from "./src/lib/hash";
 import { loadMegaConfig } from "./src/lib/mega";
-import { enqueueMegaUpload, startMegaUploader } from "./src/lib/mega-uploader";
+import { enqueueMegaUpload, startMegaUploader, notifyMaxParallelChanged } from "./src/lib/mega-uploader";
 
 const dev = process.env.NODE_ENV !== "production";
 const port = parseInt(process.env.PORT ?? "3000", 10);
@@ -72,19 +76,16 @@ function applyEvent(event: DownloaderEvent) {
     } catch (e) { console.error("db status update failed:", e); }
     lastProgressWrite.delete(event.id);
     if (event.status === "completed" && event.filePath) {
-      try {
-        if (loadMegaConfig().enabled) {
-          markMegaPending(event.id);
-          enqueueMegaUpload(event.id);
-        }
-      } catch (e) { console.error("mega enqueue failed:", e); }
+      // Hash + rename + MEGA enqueue happens off the event-processing path so
+      // a large file's sha256 doesn't stall progress events for other jobs.
+      void finalizeCompleted(event.id, event.filePath);
     }
-    // Sweep leftover .part / .ytdl / fragment files for any job that did
-    // not finish cleanly. The destination path captured by the downloader
-    // gives us the [id] bracket to match against.
+    // Sweep leftover .part / .ytdl / fragment files for any job that did not
+    // finish cleanly. Scoped to the job's own <format>/<container> subdir so a
+    // sibling format's finished file (same source [id]) is never touched.
     if ((event.status === "failed" || event.status === "canceled") && event.filePath) {
       try {
-        const n = cleanupByIdBracket(event.filePath);
+        const n = cleanupFragments(event.filePath);
         if (n > 0) console.log(`[cleanup] ${event.status} job ${event.id}: removed ${n} partial file(s)`);
       } catch (e) { console.error("partial cleanup failed:", e); }
     }
@@ -92,6 +93,81 @@ function applyEvent(event: DownloaderEvent) {
     try {
       updateJobTitle(event.id, event.title);
     } catch { /* job may not exist yet locally */ }
+  }
+}
+
+// Compute the sha256 of a finished file, rename it to embed a short hash
+// marker, record the hash in the DB, then (if MEGA is enabled) enqueue the
+// upload — strictly in that order so the uploader picks up the renamed path.
+async function finalizeCompleted(id: string, filePath: string): Promise<void> {
+  // The captured path may carry the source extension if a post-processing
+  // step changed it (audio extraction, remux). Resolve the real file first.
+  const actual = resolveActualFile(filePath) ?? filePath;
+  let finalPath = actual;
+  try {
+    if (fs.existsSync(actual)) {
+      const hash = await sha256File(actual);
+      const renamed = insertHashIntoName(actual, hash.slice(0, SHORT_HASH_LEN));
+      if (renamed !== actual) {
+        if (fs.existsSync(renamed)) {
+          // Identical content already present (idempotent re-download): drop
+          // the freshly downloaded duplicate, keep the canonical hashed file.
+          try { fs.unlinkSync(actual); } catch { /* ignore */ }
+        } else {
+          fs.renameSync(actual, renamed);
+        }
+        finalPath = renamed;
+      }
+      updateJobHash(id, hash, finalPath);
+    } else {
+      console.error(`[hash] no file found to finalize for ${id}: ${filePath}`);
+    }
+  } catch (e) {
+    console.error(`[hash] finalize failed for ${id}:`, (e as Error).message);
+  }
+  try {
+    if (loadMegaConfig().enabled) {
+      markMegaPending(id);
+      enqueueMegaUpload(id);
+    }
+  } catch (e) { console.error("mega enqueue failed:", e); }
+}
+
+// Re-assert every setting that has a runtime side effect from the DB, so the
+// saved values are authoritative across web/downloader restarts. Called on each
+// SSE (re)connect.
+//
+// Note on the rest of the settings: all OTHER settings are read straight from
+// the DB on every use, so they need no re-assertion here:
+//   - mega_enabled / email / password / folder / mega_audio_subdir — read via
+//     loadMegaConfig() on every uploader loop and upload.
+//   - default_format / default_container / default_compat — read via getSetting
+//     on each /api/jobs and /api/settings request.
+// The two below are the only ones cached in a worker process and therefore the
+// only ones that can drift after a restart:
+//   - max_parallel lives in the separate Go downloader (its own process, no DB
+//     access) → must be pushed via PATCH /config.
+//   - mega_max_parallel governs how many uploader workers spawn → wake the pool
+//     so it matches the DB value even if it was raised while idle.
+async function syncSettings(reason: string) {
+  const raw = getSetting("max_parallel");
+  if (raw) {
+    const n = parseInt(raw, 10);
+    if (Number.isFinite(n) && n >= 1) {
+      try {
+        await patchConfig(n);
+        console.log(`[config/${reason}] set downloader maxParallel=${n}`);
+      } catch (e) {
+        console.log(`[config/${reason}] failed to set maxParallel:`, (e as Error).message);
+      }
+    }
+  }
+  // Re-assert the MEGA uploader pool size against the DB (no-op if already
+  // sized; spawns workers if the limit was raised and uploads are pending).
+  try {
+    notifyMaxParallelChanged();
+  } catch (e) {
+    console.log(`[config/${reason}] mega pool re-assert failed:`, (e as Error).message);
   }
 }
 
@@ -110,9 +186,10 @@ async function reconcileNow(reason: string) {
     if (paths.length > 0) {
       console.log(`[reconcile/${reason}] marked ${paths.length} stale job(s) as failed`);
       // Each orphaned row may have left a half-written file and a swarm of
-      // .part-Frag<N>.part fragments behind. Sweep them by [id] bracket.
+      // .part-Frag<N>.part fragments behind. Sweep them within each job's
+      // own <format>/<container> subdir.
       let total = 0;
-      for (const p of paths) total += cleanupByIdBracket(p);
+      for (const p of paths) total += cleanupFragments(p);
       if (total > 0) console.log(`[reconcile/${reason}] removed ${total} partial file(s)`);
     }
   } catch (e) {
@@ -133,6 +210,9 @@ async function consumeEvents(signal: AbortSignal) {
       // was just restarted, any DB rows still tagged 'queued'/'running' that
       // it doesn't know about get marked 'failed'.
       await reconcileNow("sse-connect");
+      // Re-assert all runtime-applied settings from the DB — the downloader
+      // may have just restarted back to its env defaults.
+      await syncSettings("sse-connect");
       const reader = res.body.getReader();
       const dec = new TextDecoder();
       let buf = "";
