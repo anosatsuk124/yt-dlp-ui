@@ -16,6 +16,11 @@ import { useToast } from "@/components/ui/use-toast";
 import type { JobRow } from "@/lib/db";
 import { basename, statusBadgeClass, timeAgo } from "@/lib/format";
 
+// History rows are JobRow plus a server-computed flag for whether the file is
+// still on local disk (file_path alone can't tell — it survives a MEGA upload
+// that deleted the file).
+type HistoryRow = JobRow & { local_present?: boolean };
+
 const PAGE_SIZE = 50;
 const IDLE_REFRESH_MS = 30_000;
 const ACTIVE_REFRESH_MS = 2_000;
@@ -54,7 +59,7 @@ function FileAction({ file, path }: { file: string; path: string | null }) {
 }
 
 export default function Page() {
-  const [jobs, setJobs] = useState<JobRow[]>([]);
+  const [jobs, setJobs] = useState<HistoryRow[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
@@ -62,7 +67,7 @@ export default function Page() {
   const load = useCallback(() => {
     fetch(`/api/history?limit=${PAGE_SIZE}&offset=0`)
       .then(r => r.json())
-      .then((data: { jobs: JobRow[]; total: number }) => {
+      .then((data: { jobs: HistoryRow[]; total: number }) => {
         setJobs(data.jobs ?? []);
         setTotal(data.total ?? 0);
       })
@@ -83,7 +88,7 @@ export default function Page() {
   }, [load, hasActiveUpload]);
 
   const onDelete = useCallback(
-    async (job: JobRow) => {
+    async (job: HistoryRow) => {
       const label = job.title ?? job.url;
       if (!window.confirm(`Delete this entry and its local file?\n\n${label}`)) return;
       const res = await fetch(`/api/history/${encodeURIComponent(job.id)}`, {
@@ -93,6 +98,30 @@ export default function Page() {
         toast({ title: "Deleted" });
         setJobs(curr => curr.filter(j => j.id !== job.id));
         setTotal(t => Math.max(0, t - 1));
+      } else {
+        const body = await res.json().catch(() => ({}));
+        toast({
+          title: "Delete failed",
+          description: body?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+      }
+    },
+    [toast],
+  );
+
+  // Delete only the kept local copy of an already-uploaded file: the row and the
+  // MEGA copy stay, the entry reverts to the plain "✓ MEGA" (local gone) state.
+  const onDeleteLocal = useCallback(
+    async (job: HistoryRow) => {
+      const label = job.title ?? job.url;
+      if (!window.confirm(`Remove the local copy? The file stays on MEGA.\n\n${label}`)) return;
+      const res = await fetch(`/api/history/${encodeURIComponent(job.id)}?localOnly=1`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        toast({ title: "Local copy deleted" });
+        setJobs(curr => curr.map(j => (j.id === job.id ? { ...j, local_present: false } : j)));
       } else {
         const body = await res.json().catch(() => ({}));
         toast({
@@ -221,6 +250,7 @@ export default function Page() {
                         job={job}
                         file={file}
                         onDelete={() => onDelete(job)}
+                        onDeleteLocal={() => onDeleteLocal(job)}
                         onUpload={() => onUpload(job)}
                         onCancelUpload={() => onCancelUpload(job)}
                       />
@@ -246,28 +276,51 @@ function ActionCell({
   job,
   file,
   onDelete,
+  onDeleteLocal,
   onUpload,
   onCancelUpload,
 }: {
-  job: JobRow;
+  job: HistoryRow;
   file: string | null;
   onDelete: () => void;
+  onDeleteLocal: () => void;
   onUpload: () => void;
   onCancelUpload: () => void;
 }) {
-  // Mega upload finished — the local file is intentionally gone. Show
-  // status only; deletion isn't applicable here.
+  // MEGA upload finished. The badge always shows; what else we offer depends on
+  // whether a local copy was kept (keep-local) or deleted after upload.
   if (job.mega_status === "uploaded") {
     const when = job.mega_uploaded_at
       ? new Date(job.mega_uploaded_at).toLocaleString()
       : undefined;
-    return (
+    const badge = (
       <span
+        key="mega-badge"
         className="text-sm text-emerald-600"
         title={when ? `uploaded to MEGA at ${when}` : "uploaded to MEGA"}
       >
         ✓ MEGA
       </span>
+    );
+    // Local copy gone (the default after upload) — status only.
+    if (!job.local_present) return badge;
+    // Keep-local: the file is still on disk, so let the user open it or reclaim
+    // the space (delete local only) without losing the MEGA copy.
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+        {badge}
+        {file && <FileAction key="dl" file={file} path={job.file_path} />}
+        <Button
+          key="del-local"
+          variant="ghost"
+          size="sm"
+          className="h-auto px-1 py-0 text-destructive hover:text-destructive"
+          onClick={onDeleteLocal}
+          title="Remove the local copy; the file stays on MEGA"
+        >
+          Delete local
+        </Button>
+      </div>
     );
   }
 

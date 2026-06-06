@@ -142,6 +142,7 @@ export const TAB_KEYS = {
     selections: "queue.selections",
     compat: "queue.compat",
     extraArgs: "queue.extraArgs",
+    keepLocal: "queue.keepLocal",
     auth: "queue.auth",
     seed: "queue.seed",
   },

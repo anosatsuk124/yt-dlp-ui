@@ -78,6 +78,10 @@ export default function Page() {
   const [selections, setSelections] = useTabState<Selections>(K.selections, emptySelections);
   const [compat, setCompat] = useTabState<CompatKey>(K.compat, "auto");
   const [extraArgs, setExtraArgs] = useTabState<string>(K.extraArgs, "");
+  // Per-download "keep the local copy after MEGA upload". Seeded from the global
+  // mega_keep_local setting; whatever it is at enqueue time is pinned per job.
+  const [keepLocal, setKeepLocal] = useTabState<boolean>(K.keepLocal, false);
+  const [megaEnabled, setMegaEnabled] = useState(false);
   const [auth, setAuth] = useTabState<AuthForm>(K.auth, EMPTY_AUTH);
   const [certs, setCerts] = useState<CertEntry[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -92,7 +96,7 @@ export default function Page() {
   useSeedOnce(K.seed, store => {
     fetch("/api/settings")
       .then(r => r.json())
-      .then((s: { defaultFormat?: string; defaultContainer?: string; defaultCompat?: string }) => {
+      .then((s: { defaultFormat?: string; defaultContainer?: string; defaultCompat?: string; mega?: { keepLocal?: boolean } }) => {
         const fmt = s.defaultFormat ? normalizeFormatKey(s.defaultFormat) : "best";
         const kind = formatKind(fmt);
         const allowed = containersFor(kind);
@@ -107,9 +111,24 @@ export default function Page() {
           return next;
         });
         if (s.defaultCompat && isCompatKey(s.defaultCompat)) store.set<CompatKey>(K.compat, s.defaultCompat);
+        // Default the per-download keep-local toggle to the global setting.
+        if (s.mega && typeof s.mega.keepLocal === "boolean") store.set<boolean>(K.keepLocal, s.mega.keepLocal);
       })
       .catch(() => { /* leave default */ });
   });
+
+  // Whether MEGA upload is on — fetched live each mount so the keep-local
+  // toggle only shows when it can actually take effect.
+  useEffect(() => {
+    let canceled = false;
+    fetch("/api/settings")
+      .then(r => r.json())
+      .then((s: { mega?: { enabled?: boolean } }) => {
+        if (!canceled) setMegaEnabled(!!s.mega?.enabled);
+      })
+      .catch(() => { /* leave default */ });
+    return () => { canceled = true; };
+  }, []);
 
   // Certs are live data — re-fetch on every remount so the picker stays fresh.
   useEffect(() => {
@@ -166,6 +185,9 @@ export default function Page() {
           selections: sels,
           compat,
           extraArgs: extraArgs.trim() || undefined,
+          // Only pin the per-download choice when MEGA is on; otherwise omit it
+          // so each job defers to the global setting at upload time.
+          keepLocal: megaEnabled ? keepLocal : undefined,
           auth: Object.keys(authPayload).length ? authPayload : undefined,
           resolution: res,
           saveAsNames: names,
@@ -332,6 +354,25 @@ export default function Page() {
                 downloads ignore this.
               </p>
             </div>
+
+            {megaEnabled && (
+              <label className="flex cursor-pointer items-start gap-2 rounded-md border bg-card/30 px-3 py-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={keepLocal}
+                  onChange={e => setKeepLocal(e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium">Keep local copy after MEGA upload</span>
+                  <span className="block text-xs text-muted-foreground">
+                    These downloads stay on disk after they finish uploading to
+                    MEGA. Defaults to the global setting; applies to every URL in
+                    this batch.
+                  </span>
+                </span>
+              </label>
+            )}
 
             <details className="rounded-md border bg-card/30">
               <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium">

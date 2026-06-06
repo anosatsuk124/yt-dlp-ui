@@ -16,6 +16,8 @@ export const dynamic = "force-dynamic";
 //   mega_email        — MEGA account email
 //   mega_password     — MEGA account password (stored as-is — keep /data safe)
 //   mega_folder       — destination folder on MEGA (default /yt-dlp-ui)
+//   mega_keep_local   — "true" to keep the local copy after a successful upload
+//                       (default: delete). Per-job overrides take precedence.
 
 interface MegaResponse {
   enabled: boolean;
@@ -24,6 +26,7 @@ interface MegaResponse {
   folder: string;
   audioSubdir: string;
   maxParallel: number;
+  keepLocal: boolean;
 }
 
 export async function GET() {
@@ -35,6 +38,7 @@ export async function GET() {
     folder: getSetting("mega_folder") || DEFAULT_MEGA_FOLDER,
     audioSubdir: getSetting("mega_audio_subdir") || DEFAULT_AUDIO_SUBDIR,
     maxParallel: parseInt(getSetting("mega_max_parallel") ?? "2", 10) || 2,
+    keepLocal: getSetting("mega_keep_local") === "true",
   };
   return NextResponse.json({
     defaultFormat:    getSetting("default_format") ?? "best",
@@ -59,6 +63,7 @@ interface PutBody {
     folder?: string;
     audioSubdir?: string;
     maxParallel?: number;
+    keepLocal?: boolean;
   };
 }
 
@@ -128,6 +133,9 @@ export async function PUT(req: Request) {
       // Wake the uploader so additional workers spawn immediately if the
       // limit was raised.
       notifyMaxParallelChanged();
+    }
+    if (typeof m.keepLocal === "boolean") {
+      setSetting("mega_keep_local", m.keepLocal ? "true" : "false");
     }
   }
   return NextResponse.json({ ok: true });

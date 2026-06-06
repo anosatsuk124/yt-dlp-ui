@@ -33,6 +33,7 @@ Request:
   ],
   "compat": "auto",
   "extraArgs": "--write-subs --sub-lang \"en,en-US\"",
+  "keepLocal": true,
   "resolution": "append",
   "saveAsNames": { "https://…|best|mp4": "My custom name" },
   "auth": {
@@ -61,6 +62,11 @@ Request:
   ignores it. `ios` forces MP4 + H.264/AAC.
 - `extraArgs` (optional): free-form string, shell-split server-side and
   appended to the `yt-dlp` argv. Unterminated quotes are a 400.
+- `keepLocal` (optional bool): per-download override for keeping the on-disk
+  copy after a successful MEGA upload. Pins the choice on every created job
+  (applies to all `url × format × container` combos in the request). When
+  omitted, each job defers to the global `mega_keep_local` setting at upload
+  time.
 - `resolution` (optional): how to resolve identity conflicts (same
   url+format+container already completed/uploaded) — `"append"` (download
   anyway; coexists via content hash), `"overwrite"` (delete the old entry
@@ -165,6 +171,14 @@ Source: `web/src/app/api/history/route.ts`. Pagination defaults: `limit=50`,
   "total": 137
 }
 ```
+
+Each row carries an extra `local_present` boolean (computed server-side via
+`fs.existsSync(file_path)`) so the UI knows whether the file is still on disk —
+`file_path` alone survives a MEGA upload that deleted the file. A keep-local
+upload leaves `local_present: true` on an `mega_status: "uploaded"` row, so the
+file stays downloadable and can be removed with `DELETE
+/api/history/:id?localOnly=1` (unlinks the local copy only; the row and the
+MEGA copy are kept).
 
 Example:
 
@@ -356,7 +370,8 @@ multipart/form-data`.
     "hasPassword": false,
     "folder": "/yt-dlp-ui",
     "audioSubdir": "audio",
-    "maxParallel": 2
+    "maxParallel": 2,
+    "keepLocal": false
   }
 }
 ```
@@ -379,7 +394,8 @@ stored.
     "password": "secret",
     "folder": "/yt-dlp-ui",
     "audioSubdir": "audio",
-    "maxParallel": 2
+    "maxParallel": 2,
+    "keepLocal": false
   }
 }
 ```
@@ -390,11 +406,13 @@ is forwarded to the downloader. `defaultContainer` accepts any video container
 or audio codec key.
 
 For `mega`: any subset of `enabled` / `email` / `password` / `folder` /
-`audioSubdir` / `maxParallel` may be sent. A missing or empty `password` keeps
-the previously stored value (so the UI can re-save other fields without
-re-typing). The `folder` is forced to start with `/`; if blank, it falls back
-to `/yt-dlp-ui`. `audioSubdir` is a relative path under `folder` (default
-`audio`) where audio-only downloads are uploaded.
+`audioSubdir` / `maxParallel` / `keepLocal` may be sent. A missing or empty
+`password` keeps the previously stored value (so the UI can re-save other
+fields without re-typing). The `folder` is forced to start with `/`; if blank,
+it falls back to `/yt-dlp-ui`. `audioSubdir` is a relative path under `folder`
+(default `audio`) where audio-only downloads are uploaded. `keepLocal` (bool)
+is the global default for keeping the on-disk copy after a successful upload
+instead of deleting it.
 
 A downloader failure returns `502 downloader: <message>`; otherwise:
 
