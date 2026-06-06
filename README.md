@@ -118,6 +118,17 @@ uploads) route through a Tailscale **exit node**: set `TS_EXIT_NODE` in `.env`
 to an approved exit node's IP or MagicDNS name. Leave it empty for default
 routing. Loopback traffic between `web` and `downloader` is never exit-routed.
 
+**Direct connection to a same-host exit node.** If the exit node runs on the
+same host but on a different Docker network (e.g. a macvlan), the two can't
+hole-punch and fall back to a slow DERP relay. To get a direct connection, share
+a macvlan segment by adding the optional `docker-compose.macvlan.yml` override
+and setting `TS_MACVLAN_NETWORK` / `TS_MACVLAN_IP` in `.env`:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.tailscale.yml \
+  -f docker-compose.macvlan.yml up -d --build
+```
+
 ## Cookies
 
 Many sites refuse `yt-dlp` without an authenticated session. The flow is:
