@@ -34,6 +34,10 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
 bytes = "1"
 
+# SIGTERM the downloader on exit so it reaps its yt-dlp/ffmpeg children.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Release profile tuned for smaller, faster binaries.
 [profile.release]
 codegen-units = 1

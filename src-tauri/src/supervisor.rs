@@ -129,13 +129,46 @@ pub fn start(app: &AppHandle, sockets: &SocketPaths) -> Result<(), Box<dyn std::
     Ok(())
 }
 
-/// Kill every sidecar; called on ExitRequested/Exit.
+/// Stop the sidecars on app exit. The downloader is asked to terminate
+/// gracefully first so it reaps its own yt-dlp/ffmpeg children (a bare kill
+/// would orphan them); any survivor is then force-killed.
 pub fn shutdown(app: &AppHandle) {
-    if let Some(children) = app.try_state::<Children>() {
-        for child in children.0.lock().unwrap().drain(..) {
-            let _ = child.kill();
-        }
+    let Some(state) = app.try_state::<Children>() else {
+        return;
+    };
+    let mut guard = state.0.lock().unwrap();
+    let any = !guard.is_empty();
+    for child in guard.iter() {
+        terminate_tree(child.pid());
     }
+    // Give graceful shutdown a brief window before dropping the handles.
+    if any {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+    }
+    for child in guard.drain(..) {
+        let _ = child.kill();
+    }
+}
+
+// Ask a sidecar to stop. On Unix this is SIGTERM, which the Go downloader
+// handles by cancelling in-flight jobs and killing the yt-dlp/ffmpeg process
+// groups (node just exits). On Windows the downloader's yt-dlp/ffmpeg are
+// descendants, so taskkill /T reaps the whole tree.
+#[cfg(unix)]
+fn terminate_tree(pid: u32) {
+    unsafe {
+        libc::kill(pid as i32, libc::SIGTERM);
+    }
+}
+
+#[cfg(windows)]
+fn terminate_tree(pid: u32) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let _ = std::process::Command::new("taskkill")
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
 }
 
 async fn wait_ready(sockets: &SocketPaths) -> bool {
