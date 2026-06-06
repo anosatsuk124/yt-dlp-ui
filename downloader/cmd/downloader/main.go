@@ -124,6 +124,13 @@ type ResolveRequest struct {
 	URL         string `json:"url"`
 	CookiesFile string `json:"cookiesFile,omitempty"`
 
+	// ExtraArgs is the caller's free-form yt-dlp args. They are applied during
+	// enumeration too so playlist-selection flags (--playlist-items,
+	// --playlist-start/end, --match-filter, an explicit --no-playlist, …) take
+	// effect here — the per-entry download jobs run with --no-playlist, so any
+	// list-limiting has to happen at resolve time or it is lost.
+	ExtraArgs []string `json:"extraArgs,omitempty"`
+
 	Username           string `json:"username,omitempty"`
 	Password           string `json:"password,omitempty"`
 	TwoFactor          string `json:"twoFactor,omitempty"`
@@ -1266,6 +1273,11 @@ func buildResolveArgs(r ResolveRequest) []string {
 		args = append(args, "--cookies", r.CookiesFile)
 	}
 	args = appendAuthArgs(args, r.creds())
+	// User args last (before the URL), mirroring buildArgs, so a list-limiting
+	// flag like --playlist-items is honored while enumerating entries.
+	if len(r.ExtraArgs) > 0 {
+		args = append(args, r.ExtraArgs...)
+	}
 	args = append(args, r.URL)
 	return args
 }

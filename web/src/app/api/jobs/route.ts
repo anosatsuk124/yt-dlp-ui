@@ -157,6 +157,10 @@ export async function POST(req: Request) {
       resolved = await resolvePlaylist({
         url,
         cookiesFile: cookiesFile ?? undefined,
+        // Honor list-limiting flags (e.g. --playlist-items) while enumerating;
+        // applying them only to the per-video jobs would be too late since
+        // those run with --no-playlist.
+        extraArgs: extraArgs.length ? extraArgs : undefined,
         auth: auth && hasAny(auth) ? auth : undefined,
       });
     } catch (e) {

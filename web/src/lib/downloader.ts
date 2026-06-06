@@ -54,6 +54,10 @@ export interface ResolveResult {
 export async function resolvePlaylist(payload: {
   url: string;
   cookiesFile?: string;
+  // Forwarded so list-limiting flags (--playlist-items, --playlist-start/end,
+  // --match-filter, an explicit --no-playlist, …) apply during enumeration —
+  // the per-entry jobs run with --no-playlist, so limiting must happen here.
+  extraArgs?: string[];
   auth?: AuthOptions;
 }): Promise<ResolveResult> {
   const { auth, ...rest } = payload;

@@ -506,14 +506,20 @@ break the one-file-per-job pipeline (title probe → FINAL_PROBE → hash → ME
 {
   "url": "https://www.youtube.com/playlist?list=…",
   "cookiesFile": "/cookies/example.com.txt",
+  "extraArgs": ["--playlist-items", "1:5"],
   "username": "me",
   "password": "secret"
 }
 ```
 
 Runs `yt-dlp --flat-playlist --dump-single-json` with the same cookies/auth
-fields a job carries (all optional besides `url`). Used by the web side before
-enqueueing to decide whether to fan a URL out into per-video jobs. Response:
+fields a job carries (all optional besides `url`). `extraArgs` is the caller's
+free-form yt-dlp args, applied here too so list-limiting flags
+(`--playlist-items`, `--playlist-start/end`, `--match-filter`, an explicit
+`--no-playlist`, …) take effect during enumeration — the per-entry download
+jobs run with `--no-playlist`, so any limiting has to happen at resolve time or
+it is lost. Used by the web side before enqueueing to decide whether to fan a
+URL out into per-video jobs. Response:
 
 ```json
 {
