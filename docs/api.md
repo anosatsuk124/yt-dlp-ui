@@ -56,8 +56,11 @@ Request:
   request fans out to one job per `entry × format × container` rather than
   downloading only the first video. Each resulting job is tagged with the
   playlist title, which routes its MEGA upload to `playlists/<title>/` (see
-  `POST /resolve`). If resolution fails (extractor error, downloader
-  unreachable) the URL is enqueued as a single download.
+  `POST /resolve`). A raw URL is enqueued as a single job only when resolution
+  *confirms* it is not a playlist; if resolution fails it is reported in the
+  response's `failed[]` (not enqueued), because a pure playlist URL run as one
+  job would download multiple files that the one-file-per-job pipeline can't
+  track. If every submitted URL fails to resolve the request returns **502**.
 - `selections` (required): non-empty array of `{ format, containers[] }`. The
   request expands to one job per `url × format × container`. `format` is one of
   `"best" | "1080p" | "720p" | "audio-best"`. For video formats `containers`

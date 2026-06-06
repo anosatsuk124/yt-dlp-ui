@@ -142,17 +142,24 @@ export async function POST(req: Request) {
   // Expand any playlist URL into its individual video URLs up front — the
   // downloader has yt-dlp, the web container doesn't, so we ask it to
   // enumerate. Each entry becomes its own job tagged with the playlist title
-  // (drives the MEGA destination playlists/<title>/). A resolve failure
-  // (extractor error, downloader unreachable) degrades to treating the URL as
-  // a single download; the downloader's --no-playlist guard then keeps it to
-  // one video instead of silently dumping the whole list into one job.
+  // (drives the MEGA destination playlists/<title>/).
+  //
+  // We only enqueue a raw URL as a single job when resolve *confirms* it is not
+  // a playlist. If resolve fails we do NOT fall back to the URL as-is: yt-dlp's
+  // --no-playlist only disambiguates a URL that points at both a video and a
+  // playlist, so a pure playlist URL (e.g. .../playlist?list=…) would still
+  // download every entry into one job and the one-file-per-job pipeline (single
+  // path/hash/MEGA upload) would silently drop all but one file. Such URLs are
+  // reported as failures instead.
   interface Target { url: string; playlistTitle: string | null; seedTitle: string | null }
   const targets: Target[] = [];
+  const resolveFailures: { url: string; error: string }[] = [];
   for (const url of urls) {
     const cookiesFile = resolveCookiesFile(url);
     const binding = resolveAuthBinding(url);
     const auth = mergeAuth(binding, authOverride);
     let resolved: ResolveResult | null = null;
+    let resolveError: string | null = null;
     try {
       resolved = await resolvePlaylist({
         url,
@@ -164,7 +171,8 @@ export async function POST(req: Request) {
         auth: auth && hasAny(auth) ? auth : undefined,
       });
     } catch (e) {
-      console.error(`[resolve] ${url}:`, (e as Error).message);
+      resolveError = (e as Error).message;
+      console.error(`[resolve] ${url}:`, resolveError);
     }
     if (resolved?.isPlaylist && resolved.entries && resolved.entries.length > 0) {
       const playlistTitle = resolved.playlistTitle?.trim() || "playlist";
@@ -173,9 +181,23 @@ export async function POST(req: Request) {
         if (!entryUrl) continue;
         targets.push({ url: entryUrl, playlistTitle, seedTitle: entry.title?.trim() || null });
       }
-    } else {
+    } else if (resolved && !resolved.isPlaylist) {
+      // Confirmed single video → safe to enqueue the URL directly.
       targets.push({ url, playlistTitle: null, seedTitle: null });
+    } else {
+      // resolve threw (downloader/extractor error) — can't tell whether this is
+      // a playlist, so don't risk a multi-file single job.
+      resolveFailures.push({ url, error: resolveError ?? "could not resolve URL" });
     }
+  }
+
+  // Nothing resolved (every submitted URL failed) → surface the errors instead
+  // of silently creating nothing.
+  if (targets.length === 0 && resolveFailures.length > 0) {
+    return NextResponse.json(
+      { error: "could not resolve any URL", failed: resolveFailures },
+      { status: 502 },
+    );
   }
 
   // Build the full combo list across targets × pairs and look up existing
@@ -212,6 +234,7 @@ export async function POST(req: Request) {
           existingId: c.existing!.id,
           title: c.existing!.title ?? c.url,
         })),
+        failed: resolveFailures,
       },
       { status: 409 },
     );
@@ -298,7 +321,7 @@ export async function POST(req: Request) {
     created.push({ id, url: c.url, format: c.format, container: c.container });
   }
 
-  return NextResponse.json({ jobs: created, skipped }, { status: 201 });
+  return NextResponse.json({ jobs: created, skipped, failed: resolveFailures }, { status: 201 });
 }
 
 export async function GET() {
