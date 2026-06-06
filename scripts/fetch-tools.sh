@@ -28,6 +28,15 @@ cd "$WORK"
 dl() { curl -fL --retry 3 --retry-delay 2 -o "$2" "$1"; }
 say() { printf '\n== %s ==\n' "$*"; }
 
+# GNU coreutils ships sha256sum (Linux, Git-for-Windows); macOS only has shasum.
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 exe="" ; [ "$OS" = windows ] && exe=".exe"
 
 # --- yt-dlp (PyInstaller standalone: bundles python + pycryptodomex + websockets) ---
@@ -43,7 +52,7 @@ base="https://github.com/yt-dlp/yt-dlp/releases/download/${YTDLP_VERSION}"
 dl "${base}/${YA}" "ytdlp.bin"
 dl "${base}/SHA2-256SUMS" sums.txt
 want=$(grep -E "  ${YA}\$" sums.txt | awk '{print $1}')
-got=$(sha256sum ytdlp.bin | awk '{print $1}')
+got=$(sha256_of ytdlp.bin)
 [ -n "$want" ] && [ "$want" = "$got" ] || { echo "yt-dlp checksum mismatch ($want != $got)"; exit 1; }
 install -m 0755 ytdlp.bin "${DEST}/yt-dlp${exe}"
 
@@ -59,7 +68,7 @@ esac
 dl "https://nodejs.org/dist/v${NODE_VERSION}/${NP}.${NE}" "node.${NE}"
 dl "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" node-sums.txt
 nwant=$(grep -E "  ${NP}\.${NE}\$" node-sums.txt | awk '{print $1}')
-ngot=$(sha256sum "node.${NE}" | awk '{print $1}')
+ngot=$(sha256_of "node.${NE}")
 [ -n "$nwant" ] && [ "$nwant" = "$ngot" ] || { echo "node checksum mismatch ($nwant != $ngot)"; exit 1; }
 if [ "$NE" = "tar.xz" ]; then
   tar xf "node.${NE}"
