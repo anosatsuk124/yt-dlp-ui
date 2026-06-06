@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { Nav } from "@/components/nav";
 import { Toaster } from "@/components/ui/toaster";
+import { Providers } from "@/components/providers";
 
 export const metadata: Metadata = {
   title: "yt-dlp-ui",
@@ -16,8 +17,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <Nav />
-        <main className="container mx-auto p-4">{children}</main>
+        <Providers>
+          <Nav />
+          <main className="container mx-auto p-4">{children}</main>
+        </Providers>
         <Toaster />
       </body>
     </html>

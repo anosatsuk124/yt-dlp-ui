@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useTabState, useSeedOnce, TAB_KEYS } from "@/components/tab-state";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -71,11 +73,12 @@ export default function Page() {
   const { connected, jobs } = useJobsWs();
   const { toast } = useToast();
 
-  const [urls, setUrls] = useState("");
-  const [selections, setSelections] = useState<Selections>(emptySelections);
-  const [compat, setCompat] = useState<CompatKey>("auto");
-  const [extraArgs, setExtraArgs] = useState("");
-  const [auth, setAuth] = useState<AuthForm>(EMPTY_AUTH);
+  const K = TAB_KEYS.queue;
+  const [urls, setUrls] = useTabState<string>(K.urls, "");
+  const [selections, setSelections] = useTabState<Selections>(K.selections, emptySelections);
+  const [compat, setCompat] = useTabState<CompatKey>(K.compat, "auto");
+  const [extraArgs, setExtraArgs] = useTabState<string>(K.extraArgs, "");
+  const [auth, setAuth] = useTabState<AuthForm>(K.auth, EMPTY_AUTH);
   const [certs, setCerts] = useState<CertEntry[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
@@ -84,29 +87,33 @@ export default function Page() {
   const [resolution, setResolution] = useState<Resolution>("append");
   const [saveAsNames, setSaveAsNames] = useState<Record<string, string>>({});
 
-  // Seed selections/compat from saved settings on mount.
-  useEffect(() => {
-    let canceled = false;
+  // Seed selections/compat from saved settings — once per provider lifetime so
+  // re-mounting the tab doesn't re-apply defaults over the user's toggles.
+  useSeedOnce(K.seed, store => {
     fetch("/api/settings")
       .then(r => r.json())
       .then((s: { defaultFormat?: string; defaultContainer?: string; defaultCompat?: string }) => {
-        if (canceled) return;
         const fmt = s.defaultFormat ? normalizeFormatKey(s.defaultFormat) : "best";
         const kind = formatKind(fmt);
         const allowed = containersFor(kind);
         const cont = s.defaultContainer && isContainerKey(s.defaultContainer) && allowed.includes(s.defaultContainer)
           ? s.defaultContainer
           : allowed[0];
-        setSelections(prev => {
+        store.set<Selections>(K.selections, prev => {
           const next = emptySelections();
           // preserve any user toggles that happened before settings arrived
           for (const k of FORMAT_KEYS) next[k] = new Set(prev[k]);
           next[fmt].add(cont);
           return next;
         });
-        if (s.defaultCompat && isCompatKey(s.defaultCompat)) setCompat(s.defaultCompat);
+        if (s.defaultCompat && isCompatKey(s.defaultCompat)) store.set<CompatKey>(K.compat, s.defaultCompat);
       })
       .catch(() => { /* leave default */ });
+  });
+
+  // Certs are live data — re-fetch on every remount so the picker stays fresh.
+  useEffect(() => {
+    let canceled = false;
     fetch("/api/certs")
       .then(r => r.json())
       .then((d: { certs: CertEntry[] }) => {
@@ -333,7 +340,7 @@ export default function Page() {
               <div className="space-y-3 border-t px-3 py-3">
                 <p className="text-xs text-muted-foreground">
                   Overrides per-domain credentials saved on the{" "}
-                  <a href="/auth" className="underline">Credentials</a> page.
+                  <Link href="/auth" className="underline">Credentials</Link> page.
                   Empty fields fall through to the saved binding. 2FA codes
                   are accepted here only (TOTP codes expire too quickly to
                   persist).

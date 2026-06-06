@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTabState, TAB_KEYS } from "@/components/tab-state";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -65,9 +66,9 @@ export default function Page() {
   const [certs, setCerts] = useState<CertEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [domain, setDomain] = useState("");
-  const [form, setForm] = useState<FormState>(EMPTY_FORM);
-  const [editing, setEditing] = useState<BindingPublic | null>(null);
+  const [domain, setDomain] = useTabState<string>(TAB_KEYS.auth.domain, "");
+  const [form, setForm] = useTabState<FormState>(TAB_KEYS.auth.form, EMPTY_FORM);
+  const [editing, setEditing] = useTabState<BindingPublic | null>(TAB_KEYS.auth.editing, null);
   const [submitting, setSubmitting] = useState(false);
   const formRef = useRef<HTMLDivElement>(null);
 
