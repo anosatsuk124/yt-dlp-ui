@@ -18,6 +18,11 @@ services:
       TS_AUTHKEY: ${TS_AUTHKEY:?TS_AUTHKEY must be set}
       TS_HOSTNAME: ${TS_HOSTNAME:-yt-dlp-ui}
       TS_STATE_DIR: /var/lib/tailscale
+      # Kernel TUN mode (tailscale0) rather than the image's default
+      # userspace-networking. Required so an exit node actually routes the OTHER
+      # containers' traffic in this shared netns (userspace mode only proxies
+      # tailscaled's own connections, so container egress would bypass it).
+      TS_USERSPACE: "false"
       # --exit-node is appended only when TS_EXIT_NODE is set (IP or MagicDNS
       # name of an approved exit node); empty → no exit node (default routing).
       TS_EXTRA_ARGS: --ssh ${TS_EXIT_NODE:+--exit-node=${TS_EXIT_NODE} --exit-node-allow-lan-access}
