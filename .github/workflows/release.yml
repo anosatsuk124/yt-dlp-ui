@@ -42,8 +42,11 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
+          # xdg-utils: the AppImage bundler copies xdg-open into the bundle for
+          # tauri-plugin-opener; it's preinstalled on the x64 runner image but
+          # not the arm64 one ("xdg-open binary not found").
           sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev \
-            libsoup-3.0-dev libappindicator3-dev patchelf
+            libsoup-3.0-dev libappindicator3-dev patchelf xdg-utils
 
       # Build the web app, cross-compile the Go downloader, copy node, and fetch
       # the pinned tools into src-tauri/resources + binaries. Skips the actual
