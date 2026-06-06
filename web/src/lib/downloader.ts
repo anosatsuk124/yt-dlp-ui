@@ -70,7 +70,7 @@ export async function resolvePlaylist(payload: {
 }): Promise<ResolveResult> {
   const { auth, ...rest } = payload;
   const body = { ...rest, ...(auth ?? {}) };
-  const res = await fetch(`${DOWNLOADER_URL}/resolve`, {
+  const res = await downloaderFetch(`${DOWNLOADER_URL}/resolve`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
