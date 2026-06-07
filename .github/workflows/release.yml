@@ -15,9 +15,9 @@ jobs:
         include:
           # Linux ships deb + AppImage (the updater format). rpm is dropped: its
           # xz pass over the bundled tools took ~45 min per job for little value.
-          - { os: ubuntu-22.04,     target: x86_64-unknown-linux-gnu,  fos: linux,   farch: x64,   extra: "--bundles deb appimage --verbose" }
+          - { os: ubuntu-22.04,     target: x86_64-unknown-linux-gnu,  fos: linux,   farch: x64,   extra: "--bundles deb appimage" }
           # GitHub-hosted arm64 Linux runner (native, so better-sqlite3 builds for arm64).
-          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, fos: linux,   farch: arm64, extra: "--bundles deb appimage --verbose" }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu, fos: linux,   farch: arm64, extra: "--bundles deb appimage" }
           - { os: macos-13,         target: x86_64-apple-darwin,       fos: macos,   farch: x64 }
           - { os: macos-14,         target: aarch64-apple-darwin,      fos: macos,   farch: arm64 }
           - { os: windows-latest,   target: x86_64-pc-windows-msvc,    fos: windows, farch: x64 }
