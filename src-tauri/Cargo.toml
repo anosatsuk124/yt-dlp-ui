@@ -1,6 +1,6 @@
 [package]
 name = "ytdlp-ui"
-version = "0.1.1"
+version = "0.1.2"
 description = "yt-dlp UI — native desktop app"
 authors = ["Satsuki Akiba"]
 edition = "2021"
